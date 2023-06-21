@@ -152,6 +152,7 @@ model saleInvoice {
   paid_amount           Float
   due_amount            Float
   total_product_discount  Float?
+  total_product_qty     Int?
   profit                Float
   customer_id           Int
   user_id               Int

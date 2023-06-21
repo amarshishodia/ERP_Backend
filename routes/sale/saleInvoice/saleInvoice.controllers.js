@@ -7,10 +7,22 @@ const createSingleSaleInvoice = async (req, res) => {
     // calculate total sale price
     let totalSalePrice = 0;
     let totalProductDiscount = 0;
+    let totalProductQty = 0;
+
     req.body.saleInvoiceProduct.forEach((item) => {
       totalSalePrice +=
-        parseFloat(item.product_sale_price) * parseFloat(item.product_quantity) * parseFloat(item.product_sale_conversion);
-        totalProductDiscount += parseFloat(item.product_sale_price) * parseFloat(item.product_quantity) * parseFloat(item.product_sale_conversion) * parseFloat(item.product_sale_discount)/100;
+        parseFloat(item.product_sale_price) *
+        parseFloat(item.product_quantity) *
+        parseFloat(item.product_sale_conversion);
+
+      totalProductDiscount +=
+        (parseFloat(item.product_sale_price) *
+          parseFloat(item.product_quantity) *
+          parseFloat(item.product_sale_conversion) *
+          parseFloat(item.product_sale_discount)) /
+        100;
+
+      totalProductQty += parseInt(item.product_quantity); // to sum total product quantity
     });
     // get all product asynchronously
     const allProduct = await Promise.all(
@@ -39,8 +51,12 @@ const createSingleSaleInvoice = async (req, res) => {
         discount: parseFloat(req.body.discount),
         paid_amount: parseFloat(req.body.paid_amount),
         total_product_discount: totalProductDiscount,
+        total_product_qty: totalProductQty,
         profit:
-          totalSalePrice - totalProductDiscount - parseFloat(req.body.discount) - totalPurchasePrice,
+          totalSalePrice -
+          totalProductDiscount -
+          parseFloat(req.body.discount) -
+          totalPurchasePrice,
         due_amount:
           totalSalePrice -
           totalProductDiscount -
@@ -57,7 +73,7 @@ const createSingleSaleInvoice = async (req, res) => {
           },
         },
         note: req.body.note,
-        invoice_number: Number(req.body.invoiceNumber),  // to save invoice Number
+        invoice_number: Number(req.body.invoiceNumber), // to save invoice Number
         invoice_order_date: new Date(req.body.orderDate),
         invoice_order_number: req.body.orderNumber,
         prefix: req.body.prefix,
@@ -73,8 +89,9 @@ const createSingleSaleInvoice = async (req, res) => {
             product_sale_price: parseFloat(product.product_sale_price),
             product_sale_discount: parseFloat(product.product_sale_discount),
             product_sale_currency: product.product_sale_currency,
-            product_sale_conversion: parseFloat(product.product_sale_conversion),
-
+            product_sale_conversion: parseFloat(
+              product.product_sale_conversion
+            ),
           })),
         },
       },
@@ -155,12 +172,12 @@ const getAllSaleInvoice = async (req, res) => {
       _sum: {
         total_amount: true,
         total_product_discount: true,
+        total_product_qty: true,
         discount: true,
         due_amount: true,
         paid_amount: true,
         profit: true,
       },
-      
     });
     res.json(aggregations);
   } else {
@@ -178,12 +195,13 @@ const getAllSaleInvoice = async (req, res) => {
               _sum: {
                 total_amount: true,
                 total_product_discount: true,
+        total_product_qty: true,
                 discount: true,
                 due_amount: true,
                 paid_amount: true,
                 profit: true,
               },
-              
+
               where: {
                 date: {
                   gte: new Date(req.query.startdate),
@@ -217,8 +235,8 @@ const getAllSaleInvoice = async (req, res) => {
                 book_publisher: {
                   select: {
                     id: true,
-                    name: true
-                  }
+                    name: true,
+                  },
                 },
                 customer: {
                   select: {
@@ -252,12 +270,13 @@ const getAllSaleInvoice = async (req, res) => {
               _sum: {
                 total_amount: true,
                 total_product_discount: true,
+        total_product_qty: true,
                 discount: true,
                 due_amount: true,
                 paid_amount: true,
                 profit: true,
               },
-              
+
               where: {
                 date: {
                   gte: new Date(req.query.startdate),
@@ -288,8 +307,8 @@ const getAllSaleInvoice = async (req, res) => {
                 book_publisher: {
                   select: {
                     id: true,
-                    name: true
-                  }
+                    name: true,
+                  },
                 },
                 customer: {
                   select: {
@@ -325,12 +344,13 @@ const getAllSaleInvoice = async (req, res) => {
               _sum: {
                 total_amount: true,
                 total_product_discount: true,
-                discount: true,
+        total_product_qty: true,
+        discount: true,
                 due_amount: true,
                 paid_amount: true,
                 profit: true,
               },
-              
+
               where: {
                 date: {
                   gte: new Date(req.query.startdate),
@@ -396,12 +416,13 @@ const getAllSaleInvoice = async (req, res) => {
               _sum: {
                 total_amount: true,
                 total_product_discount: true,
-                discount: true,
+        total_product_qty: true,
+        discount: true,
                 due_amount: true,
                 paid_amount: true,
                 profit: true,
               },
-              
+
               where: {
                 date: {
                   gte: new Date(req.query.startdate),
@@ -431,8 +452,8 @@ const getAllSaleInvoice = async (req, res) => {
                 book_publisher: {
                   select: {
                     id: true,
-                    name: true
-                  }
+                    name: true,
+                  },
                 },
                 customer: {
                   select: {
@@ -609,9 +630,9 @@ const getSingleSaleInvoice = async (req, res) => {
           include: {
             product: {
               include: {
-                book_publisher: true
-              }
-            }
+                book_publisher: true,
+              },
+            },
           },
         },
         customer: true,
