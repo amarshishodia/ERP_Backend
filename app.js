@@ -95,6 +95,7 @@ app.use("/v1/designation", designationRoutes);
 app.use("/v1/product-category", productCategoryRoutes);
 app.use("/v1/book-publisher", bookPublisherRoutes);
 app.use("/v1/product-currency", productCurrencyRoutes);
+app.use("/v1/party-discount", productCurrencyRoutes);
 app.use("/v1/account", accountRoutes);
 app.use("/v1/setting", settingRoutes);
 
