@@ -37,7 +37,7 @@ const app = express();
 let allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5000",
-  "https://erp-frontend-softomation.netlify.app/"
+  "https://erp-frontend-softomation.netlify.app"
 ];
 
 // limit the number of requests from a single IP address
