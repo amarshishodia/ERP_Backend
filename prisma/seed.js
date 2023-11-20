@@ -148,7 +148,7 @@ const settings = {
   phone: "My Phone",
   email: "My Email",
   website: "My Website",
-  footer: "My Footer",
+  // footer: "My Footer",
   tag_line: "My Tag Line",
 };
 
