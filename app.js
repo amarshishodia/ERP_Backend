@@ -38,7 +38,8 @@ let allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5000",
   "https://erp-frontend-softomation.netlify.app",
-  "https://erp1backend.netlify.app"
+  "https://erp1backend.netlify.app",
+  "https://erp-backend1.vercel.app"
 ];
 
 // limit the number of requests from a single IP address
