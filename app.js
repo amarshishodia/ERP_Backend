@@ -64,6 +64,9 @@ app.use(
     origin: function (origin, callback) {
       // allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
+      if (origin.startsWith("http://localhost")) {
+        return callback(null, true);
+      }
       if (allowedOrigins.indexOf(origin) === -1) {
         let msg =
           "The CORS policy for this site does not " +
