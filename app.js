@@ -36,6 +36,7 @@ const app = express();
 // holds all the allowed origins for cors access
 let allowedOrigins = [
   "http://localhost:3000",
+  "http://localhost",
   "http://localhost:5000",
   "https://erp-frontend-softomation.netlify.app",
   "https://erp1backend.netlify.app",
