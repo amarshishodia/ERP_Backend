@@ -4,6 +4,18 @@ const prisma = new PrismaClient();
 
 const createSingleSaleInvoice = async (req, res) => {
   try {
+    
+    // Check if invoice number is already taken
+    const existingInvoice = await prisma.saleInvoice.findFirst({
+      where: {
+        invoice_number: Number(req.body.invoiceNumber),
+      },
+    });
+
+    if (existingInvoice) {
+      return res.status(400).json({ message: 'Invoice number is already taken.' });
+    }
+
     // calculate total sale price
     let totalSalePrice = 0;
     let totalProductDiscount = 0;

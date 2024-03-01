@@ -69,9 +69,20 @@ const createSingleProduct = async (req, res) => {
   } else {
     try {
       // create one product from an object
+
+      // Check if ISBN is already taken
+      const existingProduct = await prisma.product.findFirst({
+        where: {
+          isbn: req.body.isbn,
+        },
+      });
+
+      if (existingProduct) {
+        return res.status(400).json({ message: 'ISBN is already taken.' });
+      }
+
       const file = req.file;
 
-      
       const createdProduct = await prisma.product.create({
         data: {
           isbn: req.body.isbn,

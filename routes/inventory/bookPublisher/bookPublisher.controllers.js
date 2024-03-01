@@ -38,6 +38,17 @@ const createSingleBookPublisher = async (req, res) => {
 	} else {
 		try {
 			// create single book_publisher from an object
+
+			const existingProduct = await prisma.book_publisher.findFirst({
+				where: {
+					name: req.body.name,
+				},
+			  });
+		
+			  if (existingProduct) {
+				return res.status(400).json({ message: 'Publisher already exist.' });
+			  }
+
 			const createdBookPublisher = await prisma.book_publisher.create({
 				data: {
 					name: req.body.name
