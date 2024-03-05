@@ -461,12 +461,12 @@ const getAllSaleInvoice = async (req, res) => {
                     // }
                   },
                 },
-                book_publisher: {
-                  select: {
-                    id: true,
-                    name: true,
-                  },
-                },
+                // book_publisher: {
+                //   select: {
+                //     id: true,
+                //     name: true,
+                //   },
+                // },
                 customer: {
                   select: {
                     id: true,
