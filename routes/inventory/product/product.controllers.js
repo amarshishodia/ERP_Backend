@@ -135,15 +135,16 @@ const getAllProduct = async (req, res) => {
               name: true,
             },
           },
-        },
-        include: {
+        // },
+        // include: {
           product_currency: {
             select: {
-              name: true,
+              symbol: true,
+              // conversion: true
             },
           },
-        },
-        include: {
+        // },
+        // include: {
           book_publisher: {
             select: {
               name: true,
@@ -157,6 +158,8 @@ const getAllProduct = async (req, res) => {
           product.imageUrl = `${HOST}:${PORT}/v1/product-image/${product.imageName}`;
         }
       }
+    console.log("All", allProduct)
+
       res.json(allProduct);
     } catch (error) {
       res.status(400).json(error.message);
@@ -239,6 +242,8 @@ const getAllProduct = async (req, res) => {
     }, 0);
     res.json({ ...aggregations, totalPurchasePrice, totalSalePrice });
   } else if (req.query.status === "false") {
+    console.log("false")
+
     try {
       const { skip, limit } = getPagination(req.query);
       const allProduct = await prisma.product.findMany({
@@ -284,6 +289,8 @@ const getAllProduct = async (req, res) => {
       console.log(error.message);
     }
   } else {
+    console.log("else")
+
     const { skip, limit } = getPagination(req.query);
     try {
       const allProduct = await prisma.product.findMany({
@@ -307,7 +314,7 @@ const getAllProduct = async (req, res) => {
           product_currency: {
             select: {
               symbol: true,
-              conversion: true
+              conversion: true,
             },
           },
         },
