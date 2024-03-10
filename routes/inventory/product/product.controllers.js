@@ -140,7 +140,7 @@ const getAllProduct = async (req, res) => {
           product_currency: {
             select: {
               symbol: true,
-              // conversion: true
+              conversion: true
             },
           },
         // },
