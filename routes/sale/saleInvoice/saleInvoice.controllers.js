@@ -102,7 +102,8 @@ const createSingleSaleInvoice = async (req, res) => {
         },
         note: req.body.note,
         invoice_number: Number(req.body.invoiceNumber), // to save invoice Number
-        invoice_order_date: new Date(req.body.orderDate),
+        invoice_order_date: req.body.orderDate,
+        // invoice_order_date: new Date(req.body.orderDate),
         invoice_order_number: req.body.orderNumber,
         prefix: req.body.prefix,
         // map and save all products from request body array of products
@@ -847,8 +848,213 @@ const getSingleSaleInvoice = async (req, res) => {
   }
 };
 
+const updateSingleSaleInvoice = async (req, res) => {
+  try {
+    // Check if the sale invoice exists
+    const existingInvoice = await prisma.saleInvoice.findUnique({
+      where: {
+        id: Number(req.params.id), // Use the invoice ID from params to find the invoice
+      },
+    });
+
+    if (!existingInvoice) {
+      return res.status(404).json({ message: 'Sale invoice not found.' });
+    }
+
+    // Check if the invoice number is being updated to one that already exists
+    if (
+      existingInvoice.invoice_number !== Number(req.body.invoiceNumber) &&
+      (await prisma.saleInvoice.findFirst({
+        where: {
+          OR: [
+            {
+              prefix: req.body.prefix,
+              invoice_number: Number(req.body.invoiceNumber),
+            },
+            {
+              invoice_number: Number(req.body.invoiceNumber),
+            },
+          ],
+        },
+      }))
+    ) {
+      return res.status(400).json({ message: 'Invoice number is already taken.' });
+    }
+
+    // Calculate the new total sale price, total discount, and other values
+    let totalSalePrice = 0;
+    let totalProductDiscount = 0;
+    let totalProductQty = 0;
+
+    req.body.saleInvoiceProduct.forEach((item) => {
+      totalSalePrice +=
+        parseFloat(item.product_sale_price) *
+        parseFloat(item.product_quantity) *
+        parseFloat(item.product_sale_conversion);
+
+      totalProductDiscount +=
+        (parseFloat(item.product_sale_price) *
+          parseFloat(item.product_quantity) *
+          parseFloat(item.product_sale_conversion) *
+          parseFloat(item.product_sale_discount)) /
+        100;
+
+      totalProductQty += parseInt(item.product_quantity);
+    });
+
+    // Get all product information asynchronously
+    const allProduct = await Promise.all(
+      req.body.saleInvoiceProduct.map(async (item) => {
+        const product = await prisma.product.findUnique({
+          where: {
+            id: item.product_id,
+          },
+        });
+        return product;
+      })
+    );
+
+    // Calculate the new total purchase price
+    let totalPurchasePrice = 0;
+    req.body.saleInvoiceProduct.forEach((item, index) => {
+      totalPurchasePrice +=
+        allProduct[index].purchase_price * item.product_quantity;
+    });
+
+    // Convert incoming date to a specific format
+    const date = new Date(req.body.date).toISOString().split('T')[0];
+
+    // Update the sale invoice
+    const updatedInvoice = await prisma.saleInvoice.update({
+      where: {
+        id: Number(req.params.id), // Use the invoice ID from params to find the invoice
+      },
+      data: {
+        date: new Date(date),
+        total_amount: totalSalePrice,
+        discount: parseFloat(req.body.discount),
+        paid_amount: parseFloat(req.body.paid_amount),
+        total_product_discount: totalProductDiscount,
+        total_product_qty: totalProductQty,
+        profit:
+          totalSalePrice -
+          totalProductDiscount -
+          parseFloat(req.body.discount) -
+          totalPurchasePrice,
+        due_amount:
+          totalSalePrice -
+          totalProductDiscount -
+          parseFloat(req.body.discount) -
+          parseFloat(req.body.paid_amount),
+        customer: {
+          connect: {
+            id: Number(req.body.customer_id),
+          },
+        },
+        user: {
+          connect: {
+            id: Number(req.body.user_id),
+          },
+        },
+        note: req.body.note,
+        invoice_number: Number(req.body.invoiceNumber),
+        invoice_order_date: req.body.orderDate,
+        invoice_order_number: req.body.orderNumber,
+        prefix: req.body.prefix,
+        // Update the related products in the sale invoice
+        saleInvoiceProduct: {
+          deleteMany: {}, // Delete existing products before creating new ones
+          create: req.body.saleInvoiceProduct.map((product) => ({
+            product: {
+              connect: {
+                id: Number(product.product_id),
+              },
+            },
+            product_quantity: Number(product.product_quantity),
+            product_sale_price: parseFloat(product.product_sale_price),
+            product_sale_discount: parseFloat(product.product_sale_discount),
+            product_sale_currency: product.product_sale_currency,
+            product_sale_conversion: parseFloat(
+              product.product_sale_conversion
+            ),
+          })),
+        },
+      },
+    });
+
+    // Create/update the necessary journal entries for the updated invoice
+    if (req.body.paid_amount > 0) {
+      await prisma.transaction.create({
+        data: {
+          date: new Date(date),
+          debit_id: 1,
+          credit_id: 8,
+          amount: parseFloat(req.body.paid_amount),
+          particulars: `Cash receive on Sale Invoice #${updatedInvoice.id}`,
+          type: 'sale',
+          related_id: updatedInvoice.id,
+        },
+      });
+    }
+
+    const due_amount =
+      totalSalePrice -
+      parseFloat(req.body.discount) -
+      parseFloat(req.body.paid_amount);
+    if (due_amount > 0) {
+      await prisma.transaction.create({
+        data: {
+          date: new Date(date),
+          debit_id: 4,
+          credit_id: 8,
+          amount: due_amount,
+          particulars: `Due on Sale Invoice #${updatedInvoice.id}`,
+          type: 'sale',
+          related_id: updatedInvoice.id,
+        },
+      });
+    }
+
+    await prisma.transaction.create({
+      data: {
+        date: new Date(date),
+        debit_id: 9,
+        credit_id: 3,
+        amount: totalPurchasePrice,
+        particulars: `Cost of sales on Sale Invoice #${updatedInvoice.id}`,
+        type: 'sale',
+        related_id: updatedInvoice.id,
+      },
+    });
+
+    // Iterate through the updated product quantities and decrement stock
+    req.body.saleInvoiceProduct.forEach(async (item) => {
+      await prisma.product.update({
+        where: {
+          id: Number(item.product_id),
+        },
+        data: {
+          quantity: {
+            decrement: Number(item.product_quantity),
+          },
+        },
+      });
+    });
+
+    // Return the updated invoice data
+    res.json({
+      updatedInvoice,
+    });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+    console.log(error.message);
+  }
+};
+
+
 module.exports = {
   createSingleSaleInvoice,
   getAllSaleInvoice,
   getSingleSaleInvoice,
+  updateSingleSaleInvoice
 };

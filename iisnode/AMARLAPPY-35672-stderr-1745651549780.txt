@@ -1,0 +1,26 @@
+(node:35672) [DEP0005] DeprecationWarning: Buffer() is deprecated due to security and usability issues. Please use the Buffer.alloc(), Buffer.allocUnsafe(), or Buffer.from() methods instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+WARN | `express-rate-limit` | `request.ip` is undefined. You can avoid this by providing a custom `keyGenerator` function, but it may be indicative of a larger issue.
+UnauthorizedError: jwt expired
+    at new UnauthorizedError (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\errors\UnauthorizedError.js:22:28)
+    at D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:133:35
+    at step (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:33:23)
+    at Object.next (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:14:53)
+    at fulfilled (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:5:58)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+UnauthorizedError: jwt expired
+    at new UnauthorizedError (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\errors\UnauthorizedError.js:22:28)
+    at D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:133:35
+    at step (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:33:23)
+    at Object.next (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:14:53)
+    at fulfilled (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:5:58)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+UnauthorizedError: jwt expired
+    at new UnauthorizedError (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\errors\UnauthorizedError.js:22:28)
+    at D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:133:35
+    at step (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:33:23)
+    at Object.next (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:14:53)
+    at fulfilled (D:\Projects\Softomation\ERP\ERP_Backend\node_modules\express-jwt\dist\index.js:5:58)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+WARN | `express-rate-limit` | `request.ip` is undefined. You can avoid this by providing a custom `keyGenerator` function, but it may be indicative of a larger issue.
+WARN | `express-rate-limit` | `request.ip` is undefined. You can avoid this by providing a custom `keyGenerator` function, but it may be indicative of a larger issue.
