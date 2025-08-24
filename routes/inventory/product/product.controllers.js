@@ -3,7 +3,7 @@ const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 require("dotenv").config();
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 2029;
 const HOST = process.env.HOST;
 
 const createSingleProduct = async (req, res) => {
@@ -103,8 +103,14 @@ const createSingleProduct = async (req, res) => {
       });
       file?.filename?
       createdProduct.imageUrl = `${HOST}:${PORT}/v1/product-image/${file.filename}`:'';
+
+const subAcc = await prisma.subAccount.findUnique({ where: { id: 6 } });
+console.log("Credit subAccount:", subAcc);
+
+
       // stock product's account transaction create
       await prisma.transaction.create({
+        
         data: {
           date: new Date(),
           debit_id: 3,

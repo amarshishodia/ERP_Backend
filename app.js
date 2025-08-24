@@ -41,7 +41,8 @@ let allowedOrigins = [
   "https://erp-frontend-softomation.netlify.app",
   "https://erp1backend.netlify.app",
   "https://erp-backend1.vercel.app",
-  "http://127.0.0.1:8081"
+  "http://127.0.0.1:8081",
+  "https://erpbooks.softomation.com"
 ];
 
 // limit the number of requests from a single IP address
@@ -65,7 +66,7 @@ app.use(
     origin: function (origin, callback) {
       // allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
-      if (origin.startsWith("http://localhost")) {
+      if (origin.startsWith("https://erpbooks.softomation.com")) {
         return callback(null, true);
       }
       if (allowedOrigins.indexOf(origin) === -1) {

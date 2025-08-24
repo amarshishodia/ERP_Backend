@@ -26,8 +26,10 @@ model user {
   status         Boolean       @default(true)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
-  designation    designation?  @relation(fields: [designation_id], references: [id])
   saleInvoice    saleInvoice[]
+  designation    designation?  @relation(fields: [designation_id], references: [id])
+
+  @@index([designation_id], map: "user_designation_id_fkey")
 }
 
 model designation {
@@ -40,9 +42,9 @@ model designation {
 
 model product {
   id                           Int                            @id @default(autoincrement())
-  name                         String?                         
+  name                         String?
   isbn                         String                         @unique
-  author                       String?                         
+  author                       String?
   quantity                     Int
   purchase_price               Float?
   sale_price                   Float
@@ -56,13 +58,18 @@ model product {
   status                       Boolean                        @default(true)
   created_at                   DateTime                       @default(now())
   updated_at                   DateTime                       @updatedAt
-  product_category             product_category?              @relation(fields: [product_category_id], references: [id])
+  sku                          String?                        @db.Text
   book_publisher               book_publisher?                @relation(fields: [book_publisher_id], references: [id])
+  product_category             product_category?              @relation(fields: [product_category_id], references: [id])
   product_currency             product_currency?              @relation(fields: [product_currency_id], references: [id])
   purchaseInvoiceProduct       purchaseInvoiceProduct[]
   returnPurchaseInvoiceProduct returnPurchaseInvoiceProduct[]
   returnSaleInvoiceProduct     returnSaleInvoiceProduct[]
   saleInvoiceProduct           saleInvoiceProduct[]
+
+  @@index([book_publisher_id], map: "product_book_publisher_id_fkey")
+  @@index([product_category_id], map: "product_product_category_id_fkey")
+  @@index([product_currency_id], map: "product_product_currency_id_fkey")
 }
 
 model product_category {
@@ -82,13 +89,13 @@ model book_publisher {
 }
 
 model product_currency {
-  id          Int       @id @default(autoincrement())
-  name        String    @unique
-  symbol      String    @unique
-  conversion  Float
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  product     product[]
+  id         Int       @id @default(autoincrement())
+  name       String    @unique
+  symbol     String    @unique
+  conversion Float
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  product    product[]
 }
 
 model supplier {
@@ -103,33 +110,35 @@ model supplier {
 }
 
 model purchaseInvoice {
-  id                     Int                      @id @default(autoincrement())
-  date                   DateTime
-  total_amount           Float
-  discount               Float
-  paid_amount            Float
-  due_amount             Float
-  supplier_id            Int
-  note                   String?
-  supplier_memo_no       String?
-  created_at             DateTime                 @default(now())
-  updated_at             DateTime                 @updatedAt
-  supplier               supplier                 @relation(fields: [supplier_id], references: [id], onDelete: Cascade)
-  purchaseInvoiceProduct purchaseInvoiceProduct[]
-  returnPurchaseInvoice  returnPurchaseInvoice[]
+  id               Int      @id @default(autoincrement())
+  date             DateTime
+  total_amount     Float
+  discount         Float
+  paid_amount      Float
+  due_amount       Float
+  supplier_id      Int
+  note             String?
+  supplier_memo_no String?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+  supplier         supplier @relation(fields: [supplier_id], references: [id], onDelete: Cascade)
+
+  @@index([supplier_id], map: "purchaseInvoice_supplier_id_fkey")
 }
 
 model purchaseInvoiceProduct {
-  id                              Int             @id @default(autoincrement())
-  product_id                      Int
-  invoice_id                      Int
-  product_quantity                Int
-  product_purchase_price          Float
-  product_purchase_discount       Float?
-  created_at                      DateTime        @default(now())
-  updated_at                      DateTime        @updatedAt
-  invoice                         purchaseInvoice @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
-  product                         product         @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  id                        Int      @id @default(autoincrement())
+  product_id                Int
+  invoice_id                Int
+  product_quantity          Int
+  product_purchase_price    Float
+  product_purchase_discount Float?
+  created_at                DateTime @default(now())
+  updated_at                DateTime @updatedAt
+  product                   product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@index([invoice_id], map: "purchaseInvoiceProduct_invoice_id_fkey")
+  @@index([product_id], map: "purchaseInvoiceProduct_product_id_fkey")
 }
 
 model customer {
@@ -144,32 +153,33 @@ model customer {
 }
 
 model saleInvoice {
-  id                    Int                  @id @default(autoincrement())
-  date                  DateTime              
-  invoice_number        Int                  
-  total_amount          Float
-  discount              Float
-  paid_amount           Float
-  due_amount            Float
-  total_product_discount  Float?
-  total_product_qty     Int?
-  profit                Float
-  customer_id           Int
-  user_id               Int
-  note                  String?
-  created_at            DateTime             @default(now())
-  updated_at            DateTime             @updatedAt
-  customer              customer             @relation(fields: [customer_id], references: [id], onDelete: Cascade)
-  user                  user                 @relation(fields: [user_id], references: [id])
-  invoice_order_date    DateTime?
-  invoice_order_number  String?
-  prefix                String?
-  returnSaleInvoice     returnSaleInvoice[]
-  saleInvoiceProduct    saleInvoiceProduct[]
+  id                     Int       @id @default(autoincrement())
+  date                   DateTime
+  invoice_number         Int
+  total_amount           Float
+  discount               Float
+  paid_amount            Float
+  due_amount             Float
+  total_product_discount Float?
+  total_product_qty      Int?
+  profit                 Float
+  customer_id            Int
+  user_id                Int
+  note                   String?
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
+  invoice_order_date     DateTime?
+  invoice_order_number   String?
+  prefix                 String?
+  customer               customer  @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  user                   user      @relation(fields: [user_id], references: [id], onDelete: NoAction)
+
+  @@index([customer_id], map: "saleInvoice_customer_id_fkey")
+  @@index([user_id], map: "saleInvoice_user_id_fkey")
 }
 
 model saleInvoiceProduct {
-  id                      Int         @id @default(autoincrement())
+  id                      Int      @id @default(autoincrement())
   product_id              Int
   invoice_id              Int
   product_quantity        Int
@@ -177,14 +187,16 @@ model saleInvoiceProduct {
   product_sale_discount   Float?
   product_sale_currency   String?
   product_sale_conversion Float?
-  created_at              DateTime    @default(now())
-  updated_at              DateTime    @updatedAt
-  invoice                 saleInvoice @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
-  product                 product     @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  created_at              DateTime @default(now())
+  updated_at              DateTime @updatedAt
+  product                 product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@index([invoice_id], map: "saleInvoiceProduct_invoice_id_fkey")
+  @@index([product_id], map: "saleInvoiceProduct_product_id_fkey")
 }
 
 model transaction {
-  id          Int        @id @default(autoincrement())
+  id          Int      @id @default(autoincrement())
   date        DateTime
   debit_id    Int
   credit_id   Int
@@ -192,11 +204,12 @@ model transaction {
   amount      Float
   type        String?
   related_id  Int?
-  status      Boolean    @default(true)
-  created_at  DateTime   @default(now())
-  updated_at  DateTime   @updatedAt
-  credit      subAccount @relation("credit", fields: [credit_id], references: [id], onDelete: Cascade)
-  debit       subAccount @relation("debit", fields: [debit_id], references: [id], onDelete: Cascade)
+  status      Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([credit_id], map: "transaction_credit_id_fkey")
+  @@index([debit_id], map: "transaction_debit_id_fkey")
 }
 
 model role {
@@ -227,6 +240,7 @@ model rolePermission {
   role          role       @relation(fields: [role_id], references: [id], onDelete: Cascade)
 
   @@unique([role_id, permission_id])
+  @@index([permission_id], map: "rolePermission_permission_id_fkey")
 }
 
 model account {
@@ -237,104 +251,110 @@ model account {
 }
 
 model subAccount {
-  id         Int           @id @default(autoincrement())
-  name       String        @unique
+  id         Int     @id @default(autoincrement())
+  name       String  @unique
   account_id Int
-  status     Boolean       @default(true)
-  account    account       @relation(fields: [account_id], references: [id])
-  credit     transaction[] @relation("credit")
-  debit      transaction[] @relation("debit")
+  status     Boolean @default(true)
+  account    account @relation(fields: [account_id], references: [id], onDelete: NoAction)
+
+  @@index([account_id], map: "subAccount_account_id_fkey")
 }
 
 model returnPurchaseInvoice {
-  id                           Int                            @id @default(autoincrement())
-  date                         DateTime
-  total_amount                 Float
-  note                         String?
-  purchaseInvoice_id           Int
-  status                       Boolean                        @default(true)
-  created_at                   DateTime                       @default(now())
-  updated_at                   DateTime                       @updatedAt
-  purchaseInvoice              purchaseInvoice                @relation(fields: [purchaseInvoice_id], references: [id], onDelete: Cascade)
-  returnPurchaseInvoiceProduct returnPurchaseInvoiceProduct[]
+  id                 Int      @id @default(autoincrement())
+  date               DateTime
+  total_amount       Float
+  note               String?
+  purchaseInvoice_id Int
+  status             Boolean  @default(true)
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  @@index([purchaseInvoice_id], map: "returnPurchaseInvoice_purchaseInvoice_id_fkey")
 }
 
 model returnPurchaseInvoiceProduct {
-  id                     Int                   @id @default(autoincrement())
+  id                     Int      @id @default(autoincrement())
   product_id             Int
   invoice_id             Int
   product_quantity       Int
   product_purchase_price Float
   product_discount       Float?
-  created_at             DateTime              @default(now())
-  updated_at             DateTime              @updatedAt
-  invoice                returnPurchaseInvoice @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
-  product                product               @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  created_at             DateTime @default(now())
+  updated_at             DateTime @updatedAt
+  product                product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@index([invoice_id], map: "returnPurchaseInvoiceProduct_invoice_id_fkey")
+  @@index([product_id], map: "returnPurchaseInvoiceProduct_product_id_fkey")
 }
 
 model returnSaleInvoice {
-  id                       Int                        @id @default(autoincrement())
-  date                     DateTime
-  total_amount             Float
-  note                     String?
-  saleInvoice_id           Int
-  status                   Boolean                    @default(true)
-  created_at               DateTime                   @default(now())
-  updated_at               DateTime                   @updatedAt
-  saleInvoice              saleInvoice                @relation(fields: [saleInvoice_id], references: [id], onDelete: Cascade)
-  returnSaleInvoiceProduct returnSaleInvoiceProduct[]
+  id             Int      @id @default(autoincrement())
+  date           DateTime
+  total_amount   Float
+  note           String?
+  saleInvoice_id Int
+  status         Boolean  @default(true)
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@index([saleInvoice_id], map: "returnSaleInvoice_saleInvoice_id_fkey")
 }
 
 model returnSaleInvoiceProduct {
-  id                 Int               @id @default(autoincrement())
+  id                 Int      @id @default(autoincrement())
   product_id         Int
   invoice_id         Int
   product_quantity   Int
   product_sale_price Float
-  created_at         DateTime          @default(now())
-  updated_at         DateTime          @updatedAt
-  invoice            returnSaleInvoice @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
-  product            product           @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+  product            product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@index([invoice_id], map: "returnSaleInvoiceProduct_invoice_id_fkey")
+  @@index([product_id], map: "returnSaleInvoiceProduct_product_id_fkey")
 }
 
 model appSetting {
-  id           Int    @id @default(autoincrement())
-  company_name String
-  tag_line     String?
-  address      String
-  phone        String
-  email        String?
-  website      String?
-  bank_name    String?
-  account_name  String?
-  account_number  String?
-  ifsc          String?
-  terms         String?
-  logo          String?
-
+  id             Int     @id @default(autoincrement())
+  company_name   String
+  tag_line       String?
+  address        String
+  phone          String
+  email          String?
+  website        String?
+  bank_name      String?
+  account_name   String?
+  account_number String?
+  ifsc           String?
+  terms          String? @db.LongText
+  logo           String?
 }
 
 model firm {
-  id           Int    @id @default(autoincrement())
-  name         String
-  address      String
-  phone        String
-  email        String
-  website      String
-  prefix       prefix[]
-}
-
-model module {
-  id      Int @id @default(autoincrement())
+  id      Int      @id @default(autoincrement())
   name    String
+  address String
+  phone   String
+  email   String
+  website String
   prefix  prefix[]
 }
 
+model module {
+  id     Int      @id @default(autoincrement())
+  name   String
+  prefix prefix[]
+}
+
 model prefix {
-  id                 Int              @id @default(autoincrement())
-  firm_id            Int
-  module_id          Int
-  value              String
-  firm               firm             @relation(fields: [firm_id], references: [id], onDelete: Cascade)
-  module             module           @relation(fields: [module_id], references: [id], onDelete: Cascade)
+  id        Int    @id @default(autoincrement())
+  firm_id   Int
+  module_id Int
+  value     String
+  firm      firm   @relation(fields: [firm_id], references: [id], onDelete: Cascade)
+  module    module @relation(fields: [module_id], references: [id], onDelete: Cascade)
+
+  @@index([firm_id], map: "prefix_firm_id_fkey")
+  @@index([module_id], map: "prefix_module_id_fkey")
 }
