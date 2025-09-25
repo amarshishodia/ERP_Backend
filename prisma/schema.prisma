@@ -173,6 +173,7 @@ model saleInvoice {
   prefix                 String?
   customer               customer  @relation(fields: [customer_id], references: [id], onDelete: Cascade)
   user                   user      @relation(fields: [user_id], references: [id], onDelete: NoAction)
+  saleInvoiceProduct saleInvoiceProduct[]
 
   @@index([customer_id], map: "saleInvoice_customer_id_fkey")
   @@index([user_id], map: "saleInvoice_user_id_fkey")
@@ -190,6 +191,7 @@ model saleInvoiceProduct {
   created_at              DateTime @default(now())
   updated_at              DateTime @updatedAt
   product                 product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  saleInvoice saleInvoice @relation(fields: [invoice_id], references: [id]) 
 
   @@index([invoice_id], map: "saleInvoiceProduct_invoice_id_fkey")
   @@index([product_id], map: "saleInvoiceProduct_product_id_fkey")

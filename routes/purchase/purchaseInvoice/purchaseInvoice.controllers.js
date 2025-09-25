@@ -219,18 +219,6 @@ const getAllPurchaseInvoice = async (req, res) => {
           },
           credit_id: 13,
         },
-        include: {
-          debit: {
-            select: {
-              name: true,
-            },
-          },
-          credit: {
-            select: {
-              name: true,
-            },
-          },
-        },
       });
       const returnPurchaseInvoice = await prisma.returnPurchaseInvoice.findMany(
         {
@@ -327,18 +315,6 @@ const getSinglePurchaseInvoice = async (req, res) => {
             type: "purchase_return",
           },
         ],
-      },
-      include: {
-        debit: {
-          select: {
-            name: true,
-          },
-        },
-        credit: {
-          select: {
-            name: true,
-          },
-        },
       },
     });
     // transactions of the paid amount
