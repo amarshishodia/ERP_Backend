@@ -209,6 +209,8 @@ model transaction {
   status      Boolean  @default(true)
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
+  debit       account  @relation("TransactionDebit", fields: [debit_id], references: [id])
+  credit      account  @relation("TransactionCredit", fields: [credit_id], references: [id])
 
   @@index([credit_id], map: "transaction_credit_id_fkey")
   @@index([debit_id], map: "transaction_debit_id_fkey")
@@ -246,10 +248,12 @@ model rolePermission {
 }
 
 model account {
-  id         Int          @id @default(autoincrement())
-  name       String       @unique
-  type       String
-  subAccount subAccount[]
+  id                    Int           @id @default(autoincrement())
+  name                  String        @unique
+  type                  String
+  subAccount            subAccount[]
+  debitTransactions     transaction[] @relation("TransactionDebit")
+  creditTransactions    transaction[] @relation("TransactionCredit")
 }
 
 model subAccount {

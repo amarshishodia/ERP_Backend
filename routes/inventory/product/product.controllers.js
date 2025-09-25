@@ -374,17 +374,39 @@ const getSingleProduct = async (req, res) => {
 
 const updateSingleProduct = async (req, res) => {
   try {
+    const file = req.file;
+    
+    const updateData = {
+      name: req.body.name,
+      author: req.body.author,
+      book_publisher_id: Number(req.body.book_publisher_id),
+      quantity: parseInt(req.body.quantity),
+      product_currency_id: Number(req.body.product_currency_id),
+      purchase_price: parseFloat(req.body.purchase_price),
+      sale_price: parseFloat(req.body.sale_price),
+      product_category_id: Number(req.body.product_category_id),
+      unit_measurement: parseFloat(req.body.unit_measurement),
+      unit_type: req.body.unit_type,
+      reorder_quantity: parseInt(req.body.reorder_quantity),
+    };
+
+    // Only update image if a new file is provided
+    if (file?.filename) {
+      updateData.imageName = file.filename;
+    }
+
     const updatedProduct = await prisma.product.update({
       where: {
         id: Number(req.params.id),
       },
-      data: {
-        name: req.body.name,
-        quantity: parseInt(req.body.quantity),
-        purchase_price: parseFloat(req.body.purchase_price),
-        sale_price: parseFloat(req.body.sale_price),
-      },
+      data: updateData,
     });
+
+    // Add image URL if image exists
+    if (updatedProduct.imageName) {
+      updatedProduct.imageUrl = `${HOST}:${PORT}/v1/product-image/${updatedProduct.imageName}`;
+    }
+
     res.json(updatedProduct);
   } catch (error) {
     res.status(400).json(error.message);
