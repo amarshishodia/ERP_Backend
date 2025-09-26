@@ -122,6 +122,7 @@ model purchaseInvoice {
   created_at       DateTime @default(now())
   updated_at       DateTime @updatedAt
   supplier         supplier @relation(fields: [supplier_id], references: [id], onDelete: Cascade)
+  returnPurchaseInvoice returnPurchaseInvoice[]
 
   @@index([supplier_id], map: "purchaseInvoice_supplier_id_fkey")
 }
@@ -174,6 +175,7 @@ model saleInvoice {
   customer               customer  @relation(fields: [customer_id], references: [id], onDelete: Cascade)
   user                   user      @relation(fields: [user_id], references: [id], onDelete: NoAction)
   saleInvoiceProduct saleInvoiceProduct[]
+  returnSaleInvoice returnSaleInvoice[]
 
   @@index([customer_id], map: "saleInvoice_customer_id_fkey")
   @@index([user_id], map: "saleInvoice_user_id_fkey")
@@ -275,6 +277,7 @@ model returnPurchaseInvoice {
   status             Boolean  @default(true)
   created_at         DateTime @default(now())
   updated_at         DateTime @updatedAt
+  purchaseInvoice    purchaseInvoice @relation(fields: [purchaseInvoice_id], references: [id], onDelete: Cascade)
 
   @@index([purchaseInvoice_id], map: "returnPurchaseInvoice_purchaseInvoice_id_fkey")
 }
@@ -303,6 +306,7 @@ model returnSaleInvoice {
   status         Boolean  @default(true)
   created_at     DateTime @default(now())
   updated_at     DateTime @updatedAt
+  saleInvoice    saleInvoice @relation(fields: [saleInvoice_id], references: [id], onDelete: Cascade)
 
   @@index([saleInvoice_id], map: "returnSaleInvoice_saleInvoice_id_fkey")
 }

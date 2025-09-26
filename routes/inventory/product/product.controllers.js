@@ -83,23 +83,40 @@ const createSingleProduct = async (req, res) => {
 
       const file = req.file;
 
-      const createdProduct = await prisma.product.create({
-        data: {
-          isbn: req.body.isbn,
-          name: req.body.name,
-          author: req.body.author,
-          book_publisher_id: Number(req.body.book_publisher_id),
-          quantity: parseInt(req.body.quantity),
-          product_currency_id: Number(req.body.product_currency_id),
-          purchase_price: parseFloat(req.body.purchase_price),
-          sale_price: parseFloat(req.body.sale_price),
-          imageName: file?.filename?file.filename:'',
-          product_category_id: Number(req.body.product_category_id),
-          // sku: req.body.sku,
-          unit_measurement: parseFloat(req.body.unit_measurement),
-          unit_type: req.body.unit_type,
-          reorder_quantity: parseInt(req.body.reorder_quantity),
+      // Prepare data object with proper handling of optional fields
+      const productData = {
+        isbn: req.body.isbn,
+        name: req.body.name,
+        author: req.body.author || null,
+        book_publisher: {
+          connect: { id: Number(req.body.book_publisher_id) }
         },
+        product_currency: {
+          connect: { id: Number(req.body.product_currency_id) }
+        },
+        purchase_price: req.body.purchase_price ? parseFloat(req.body.purchase_price) : 0,
+        sale_price: parseFloat(req.body.sale_price),
+        imageName: file?.filename || '',
+        unit_type: req.body.unit_type,
+      };
+
+      // Set quantity - use provided value or default to 0
+      productData.quantity = req.body.quantity && !isNaN(parseInt(req.body.quantity)) 
+        ? parseInt(req.body.quantity) 
+        : 0;
+
+      if (req.body.product_category_id && !isNaN(Number(req.body.product_category_id))) {
+        productData.product_category = {
+          connect: { id: Number(req.body.product_category_id) }
+        };
+      }
+
+      if (req.body.unit_measurement && !isNaN(parseFloat(req.body.unit_measurement))) {
+        productData.unit_measurement = parseFloat(req.body.unit_measurement);
+      }
+
+      const createdProduct = await prisma.product.create({
+        data: productData,
       });
       file?.filename?
       createdProduct.imageUrl = `${HOST}:${PORT}/v1/product-image/${file.filename}`:'';
@@ -108,18 +125,21 @@ const subAcc = await prisma.subAccount.findUnique({ where: { id: 6 } });
 console.log("Credit subAccount:", subAcc);
 
 
-      // stock product's account transaction create
-      await prisma.transaction.create({
-        
-        data: {
-          date: new Date(),
-          debit_id: 3,
-          credit_id: 6,
-          amount:
-            parseFloat(req.body.purchase_price) * parseInt(req.body.quantity),
-          particulars: `Initial stock of product #${createdProduct.id}`,
-        },
-      });
+      // stock product's account transaction create (only if quantity > 0 and purchase_price > 0)
+      const quantity = req.body.quantity && !isNaN(parseInt(req.body.quantity)) ? parseInt(req.body.quantity) : 0;
+      const purchasePrice = req.body.purchase_price && !isNaN(parseFloat(req.body.purchase_price)) ? parseFloat(req.body.purchase_price) : 0;
+      
+      if (quantity > 0 && purchasePrice > 0) {
+        await prisma.transaction.create({
+          data: {
+            date: new Date(),
+            debit_id: 3,
+            credit_id: 6,
+            amount: purchasePrice * quantity,
+            particulars: `Initial stock of product #${createdProduct.id}`,
+          },
+        });
+      }
       res.json(createdProduct);
     } catch (error) {
       res.status(400).json(error.message);
@@ -145,6 +165,8 @@ const getAllProduct = async (req, res) => {
         // include: {
           product_currency: {
             select: {
+              id: true,
+              name: true,
               symbol: true,
               conversion: true
             },
@@ -203,7 +225,10 @@ const getAllProduct = async (req, res) => {
         include: {
           product_currency: {
             select: {
+              id: true,
               name: true,
+              symbol: true,
+              conversion: true,
             },
           },
         },
@@ -269,7 +294,10 @@ const getAllProduct = async (req, res) => {
         include: {
           product_currency: {
             select: {
+              id: true,
               name: true,
+              symbol: true,
+              conversion: true,
             },
           },
         },
@@ -319,6 +347,8 @@ const getAllProduct = async (req, res) => {
           },
           product_currency: {
             select: {
+              id: true,
+              name: true,
               symbol: true,
               conversion: true,
             },

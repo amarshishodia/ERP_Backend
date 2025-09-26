@@ -57,7 +57,8 @@ const createSingleCustomer = async (req, res) => {
 const getAllCustomer = async (req, res) => {
   if (req.query.query === "all") {
     try {
-      // get all customer
+      console.log("Getting all customers with status:", req.query.status);
+      // get all customer with status filter
       const allCustomer = await prisma.customer.findMany({
         orderBy: {
           id: "asc",
@@ -65,7 +66,11 @@ const getAllCustomer = async (req, res) => {
         include: {
           saleInvoice: true,
         },
+        where: {
+          status: req.query.status === "false" ? false : true,
+        },
       });
+      console.log("Found customers:", allCustomer.length);
       res.json(allCustomer);
     } catch (error) {
       res.status(400).json(error.message);

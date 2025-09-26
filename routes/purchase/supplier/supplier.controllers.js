@@ -58,13 +58,16 @@ const createSingleSupplier = async (req, res) => {
 const getAllSupplier = async (req, res) => {
   if (req.query.query === "all") {
     try {
-      // get all suppliers
+      // get all suppliers with status filter
       const allSupplier = await prisma.supplier.findMany({
         orderBy: {
           id: "asc",
         },
         include: {
           purchaseInvoice: true,
+        },
+        where: {
+          status: req.query.status === "false" ? false : true,
         },
       });
       res.json(allSupplier);
