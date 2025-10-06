@@ -1,9 +1,11 @@
+require('dotenv').config();
 const rateLimit = require("express-rate-limit");
 const compression = require("compression");
 const express = require("express");
 const helmet = require("helmet");
 const morgan = require("morgan");
 const cors = require("cors");
+const cacheService = require("./utils/cache");
 const paymentPurchaseInvoiceRoutes = require("./routes/purchase/paymentPurchaseInvoice/paymentPurchaseInvoice.routes");
 const paymentSaleInvoiceRoutes = require("./routes/sale/paymentSaleInvoice/paymentSaleInvoice.routes");
 const returnSaleInvoiceRoutes = require("./routes/sale/returnSaleInvoice/returnSaleInvoice.routes");
@@ -32,6 +34,9 @@ const settingRoutes = require("./routes/setting/setting.routes");
 /* variables */
 // express app instance
 const app = express();
+
+// Initialize cache service
+cacheService.connect();
 
 // holds all the allowed origins for cors access
 let allowedOrigins = [

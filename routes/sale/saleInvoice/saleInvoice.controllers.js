@@ -687,6 +687,9 @@ const getSingleSaleInvoice = async (req, res) => {
             type: "sale_return",
           },
         ],
+        // credit_id: {
+        //   not: null, // Only include transactions with valid credit_id
+        // },
       },
       include: {
         debit: {
@@ -714,6 +717,9 @@ const getSingleSaleInvoice = async (req, res) => {
             debit_id: 2,
           },
         ],
+        // credit_id: {
+        //   not: null, // Only include transactions with valid credit_id
+        // },
       },
       include: {
         debit: {
@@ -747,6 +753,9 @@ const getSingleSaleInvoice = async (req, res) => {
         type: "sale",
         related_id: Number(req.params.id),
         debit_id: 14,
+        // credit_id: {
+        //   not: null, // Only include transactions with valid credit_id
+        // },
       },
       include: {
         debit: {
@@ -775,6 +784,9 @@ const getSingleSaleInvoice = async (req, res) => {
             credit_id: 2,
           },
         ],
+        // credit_id: {
+        //   not: null, // Only include transactions with valid credit_id
+        // },
       },
       include: {
         debit: {

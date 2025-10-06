@@ -1,6 +1,7 @@
 const { getPagination } = require("../../../utils/query");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
+const cacheService = require("../../../utils/cache");
 require("dotenv").config();
 
 const PORT = process.env.PORT || 2029;
@@ -140,6 +141,10 @@ console.log("Credit subAccount:", subAcc);
           },
         });
       }
+
+      // Invalidate product cache when new product is created
+      await cacheService.invalidateProductCache();
+
       res.json(createdProduct);
     } catch (error) {
       res.status(400).json(error.message);
@@ -151,7 +156,33 @@ console.log("Credit subAccount:", subAcc);
 const getAllProduct = async (req, res) => {
   if (req.query.query === "all") {
     try {
+      // Get pagination parameters
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 50; // Default to 50 instead of all
+      const status = req.query.status !== "false";
+
+      // Try to get from cache first
+      const cacheKey = `products:${status}:${page}:${limit}`;
+      const cachedData = await cacheService.getProducts(page, limit, status);
+      
+      if (cachedData) {
+        console.log('Products served from cache');
+        return res.json(cachedData);
+      }
+
+      const skip = (page - 1) * limit;
+
+      // Get total count for pagination
+      const totalCount = await prisma.product.count({
+        where: {
+          status: status
+        }
+      });
+
       const allProduct = await prisma.product.findMany({
+        where: {
+          status: status
+        },
         orderBy: {
           id: "desc",
         },
@@ -161,8 +192,6 @@ const getAllProduct = async (req, res) => {
               name: true,
             },
           },
-        // },
-        // include: {
           product_currency: {
             select: {
               id: true,
@@ -171,47 +200,99 @@ const getAllProduct = async (req, res) => {
               conversion: true
             },
           },
-        // },
-        // include: {
           book_publisher: {
             select: {
               name: true,
             },
           },
         },
+        skip: skip,
+        take: limit,
       });
-      // attach signed url to each product
-      for (let product of allProduct) {
-        if (product.imageName) {
-          product.imageUrl = `${HOST}:${PORT}/v1/product-image/${product.imageName}`;
-        }
-      }
-    console.log("All", allProduct)
 
-      res.json(allProduct);
+      // Optimize image URL generation
+      const productsWithImages = allProduct.map(product => ({
+        ...product,
+        imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null
+      }));
+
+      const responseData = {
+        data: productsWithImages,
+        pagination: {
+          currentPage: page,
+          totalPages: Math.ceil(totalCount / limit),
+          totalItems: totalCount,
+          itemsPerPage: limit,
+          hasNextPage: page < Math.ceil(totalCount / limit),
+          hasPrevPage: page > 1
+        }
+      };
+
+      // Cache the response
+      await cacheService.setProducts(page, limit, status, responseData, 300); // 5 minutes cache
+
+      res.json(responseData);
     } catch (error) {
       res.status(400).json(error.message);
       console.log(error.message);
     }
   } else if (req.query.query === "search") {
     try {
-      const allProduct = await prisma.product.findMany({
-        where: {
-          OR: [
-            {
+      const searchTerm = req.query.prod || "";
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 20; // Smaller limit for search results
+
+      // Try to get from cache first
+      const cachedData = await cacheService.getSearchResults(searchTerm, page, limit);
+      
+      if (cachedData) {
+        console.log('Search results served from cache');
+        return res.json(cachedData);
+      }
+
+      const skip = (page - 1) * limit;
+
+      // Build search conditions (MySQL doesn't support mode: insensitive)
+      const searchConditions = searchTerm ? {
+        OR: [
+          {
+            name: {
+              contains: searchTerm,
+            },
+          },
+          {
+            isbn: {
+              contains: searchTerm,
+            },
+          },
+          {
+            author: {
+              contains: searchTerm,
+            },
+          },
+          {
+            sku: {
+              contains: searchTerm,
+            },
+          },
+          {
+            book_publisher: {
               name: {
-                contains: req.query.prod,
-                mode: "insensitive",
+                contains: searchTerm,
               },
             },
-            {
-              sku: {
-                contains: req.query.prod,
-                mode: "insensitive",
-              },
-            },
-          ],
-        },
+          },
+        ],
+        status: true
+      } : { status: true };
+
+      // Get total count for pagination
+      const totalCount = await prisma.product.count({
+        where: searchConditions
+      });
+
+      const allProduct = await prisma.product.findMany({
+        where: searchConditions,
         orderBy: {
           id: "desc",
         },
@@ -221,8 +302,6 @@ const getAllProduct = async (req, res) => {
               name: true,
             },
           },
-        },
-        include: {
           product_currency: {
             select: {
               id: true,
@@ -231,22 +310,87 @@ const getAllProduct = async (req, res) => {
               conversion: true,
             },
           },
-        },
-        include: {
           book_publisher: {
             select: {
               name: true,
             },
           },
         },
+        skip: skip,
+        take: limit,
       });
-      // attach signed url to each product
-      for (let product of allProduct) {
-        if (product.imageName) {
-          product.imageUrl = `${HOST}:${PORT}/v1/product-image/${product.imageName}`;
-        }
+
+      // Sort by relevance if searching
+      if (searchTerm) {
+        allProduct.sort((a, b) => {
+          const searchLower = searchTerm.toLowerCase();
+          
+          // Calculate relevance score for each product
+          const getRelevanceScore = (product) => {
+            let score = 0;
+            const name = (product.name || '').toLowerCase();
+            const isbn = (product.isbn || '').toLowerCase();
+            const author = (product.author || '').toLowerCase();
+            const publisher = (product.book_publisher?.name || '').toLowerCase();
+            const sku = (product.sku || '').toLowerCase();
+            
+            // Exact matches get highest score
+            if (name === searchLower) score += 100;
+            if (isbn === searchLower) score += 100;
+            if (author === searchLower) score += 100;
+            if (publisher === searchLower) score += 100;
+            if (sku === searchLower) score += 100;
+            
+            // Starts with gets high score
+            if (name.startsWith(searchLower)) score += 50;
+            if (isbn.startsWith(searchLower)) score += 50;
+            if (author.startsWith(searchLower)) score += 50;
+            if (publisher.startsWith(searchLower)) score += 50;
+            if (sku.startsWith(searchLower)) score += 50;
+            
+            // Contains gets medium score
+            if (name.includes(searchLower)) score += 20;
+            if (isbn.includes(searchLower)) score += 20;
+            if (author.includes(searchLower)) score += 20;
+            if (publisher.includes(searchLower)) score += 20;
+            if (sku.includes(searchLower)) score += 20;
+            
+            return score;
+          };
+          
+          const scoreA = getRelevanceScore(a);
+          const scoreB = getRelevanceScore(b);
+          
+          // Sort by relevance score (descending), then by ID (descending)
+          if (scoreA !== scoreB) {
+            return scoreB - scoreA;
+          }
+          return b.id - a.id;
+        });
       }
-      res.json(allProduct);
+
+      // Optimize image URL generation
+      const productsWithImages = allProduct.map(product => ({
+        ...product,
+        imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null
+      }));
+
+      const responseData = {
+        data: productsWithImages,
+        pagination: {
+          currentPage: page,
+          totalPages: Math.ceil(totalCount / limit),
+          totalItems: totalCount,
+          itemsPerPage: limit,
+          hasNextPage: page < Math.ceil(totalCount / limit),
+          hasPrevPage: page > 1
+        }
+      };
+
+      // Cache the search results
+      await cacheService.setSearchResults(searchTerm, page, limit, responseData, 180); // 3 minutes cache
+
+      res.json(responseData);
     } catch (error) {
       res.status(400).json(error.message);
       console.log(error.message);
@@ -323,8 +467,7 @@ const getAllProduct = async (req, res) => {
       console.log(error.message);
     }
   } else {
-    console.log("else")
-
+    // Default paginated endpoint
     const { skip, limit } = getPagination(req.query);
     try {
       const allProduct = await prisma.product.findMany({
@@ -354,30 +497,17 @@ const getAllProduct = async (req, res) => {
             },
           },
         },
-        // include: {
-        //   product_currency: {
-        //     select: {
-        //       name: true,
-        //     },
-        //   },
-        // },
-        // include: {
-        //   book_publisher: {
-        //     select: {
-        //       name: true,
-        //     },
-        //   },
-        // },
         skip: Number(skip),
         take: Number(limit),
       });
-      // attach signed url to each product
-      for (let product of allProduct) {
-        if (product.imageName) {
-          product.imageUrl = `${HOST}:${PORT}/v1/product-image/${product.imageName}`;
-        }
-      }
-      res.json(allProduct);
+
+      // Optimize image URL generation
+      const productsWithImages = allProduct.map(product => ({
+        ...product,
+        imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null
+      }));
+
+      res.json(productsWithImages);
     } catch (error) {
       res.status(400).json(error.message);
       console.log(error.message);
@@ -437,6 +567,9 @@ const updateSingleProduct = async (req, res) => {
       updatedProduct.imageUrl = `${HOST}:${PORT}/v1/product-image/${updatedProduct.imageName}`;
     }
 
+    // Invalidate product cache when product is updated
+    await cacheService.invalidateProductCache();
+
     res.json(updatedProduct);
   } catch (error) {
     res.status(400).json(error.message);
@@ -458,6 +591,10 @@ const deleteSingleProduct = async (req, res) => {
     // if (deletedProduct && deletedProduct.imageName) {
     //   await deleteFile(deletedProduct.imageName);
     // }
+
+    // Invalidate product cache when product status is changed
+    await cacheService.invalidateProductCache();
+
     res.json(deletedProduct);
   } catch (error) {
     res.status(400).json(error.message);

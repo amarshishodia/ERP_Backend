@@ -62,6 +62,16 @@ const extractTextFromPDF = async (pdfPath) => {
 // Function to analyze bill content with OpenAI
 const analyzeBillContent = async (content, contentType = 'image') => {
   try {
+    // Check if OpenAI API key is configured
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error('OpenAI API key is not configured');
+    }
+
+    // Validate content
+    if (!content || content.trim() === '') {
+      throw new Error('No content provided for analysis');
+    }
+
     let messages;
     
     if (contentType === 'image') {
@@ -172,7 +182,13 @@ const analyzeBillContent = async (content, contentType = 'image') => {
     }
   } catch (error) {
     console.error('Error analyzing bill with OpenAI:', error);
-    throw new Error('Failed to analyze bill content');
+    console.error('Error details:', {
+      message: error.message,
+      status: error.status,
+      code: error.code,
+      type: error.type
+    });
+    throw new Error(`Failed to analyze bill content: ${error.message}`);
   }
 };
 
@@ -300,6 +316,14 @@ const checkExistingData = async (extractedData) => {
 // Main controller function
 const analyzeBill = async (req, res) => {
   try {
+    // Check if OpenAI API key is configured
+    if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === 'your_openai_api_key_here') {
+      return res.status(500).json({ 
+        message: 'OpenAI API key is not configured. Please set OPENAI_API_KEY in your .env file.',
+        error: 'Missing OpenAI API key configuration'
+      });
+    }
+
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ message: 'No files uploaded' });
     }
@@ -389,7 +413,36 @@ const analyzeBill = async (req, res) => {
   }
 };
 
+// Controller function to analyze new items after user confirms data
+const analyzeNewItems = async (req, res) => {
+  try {
+    const { supplier, products } = req.body;
+
+    if (!supplier || !products) {
+      return res.status(400).json({ message: 'Supplier and products data required' });
+    }
+
+    // Create the extractedData object in the format expected by checkExistingData
+    const extractedData = {
+      supplier,
+      products
+    };
+
+    // Use the existing checkExistingData function
+    const result = await checkExistingData(extractedData);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error analyzing new items:', error);
+    res.status(500).json({ 
+      message: 'Failed to analyze new items',
+      error: error.message 
+    });
+  }
+};
+
 module.exports = {
   upload,
   analyzeBill,
+  analyzeNewItems,
 };
