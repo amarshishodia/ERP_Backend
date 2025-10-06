@@ -285,6 +285,7 @@ model returnPurchaseInvoice {
   created_at         DateTime @default(now())
   updated_at         DateTime @updatedAt
   purchaseInvoice    purchaseInvoice @relation(fields: [purchaseInvoice_id], references: [id], onDelete: Cascade)
+  returnPurchaseInvoiceProduct returnPurchaseInvoiceProduct[]
 
   @@index([purchaseInvoice_id], map: "returnPurchaseInvoice_purchaseInvoice_id_fkey")
 }
@@ -299,6 +300,7 @@ model returnPurchaseInvoiceProduct {
   created_at             DateTime @default(now())
   updated_at             DateTime @updatedAt
   product                product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  returnPurchaseInvoice  returnPurchaseInvoice @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
 
   @@index([invoice_id], map: "returnPurchaseInvoiceProduct_invoice_id_fkey")
   @@index([product_id], map: "returnPurchaseInvoiceProduct_product_id_fkey")
