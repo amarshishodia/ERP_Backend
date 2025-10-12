@@ -1,3 +1,6 @@
+const { PrismaClient } = require("@prisma/client");
+const prisma = new PrismaClient();
+
 const editSingleSaleInvoice = async (req, res) => {
   try {
     const invoiceId = Number(req.params.id);
@@ -42,6 +45,15 @@ const editSingleSaleInvoice = async (req, res) => {
       totalProductQty += parseInt(item.product_quantity); // to sum total product quantity
     });
 
+    // Calculate final totals with round off
+    const subtotalAfterProductDiscounts = totalSalePrice - totalProductDiscount;
+    const additionalDiscount = parseFloat(req.body.discount) || 0;
+    const roundOffAmount = parseFloat(req.body.round_off_amount) || 0;
+    const roundOffEnabled = req.body.round_off_enabled || false;
+    const finalTotal = subtotalAfterProductDiscounts - additionalDiscount + roundOffAmount;
+    const paidAmount = parseFloat(req.body.paid_amount) || 0;
+    const dueAmount = finalTotal - paidAmount;
+
     // get all product asynchronously
     const allProduct = await Promise.all(
       req.body.saleInvoiceProduct.map(async (item) => {
@@ -72,20 +84,18 @@ const editSingleSaleInvoice = async (req, res) => {
       data: {
         date: new Date(date),
         total_amount: totalSalePrice,
-        discount: parseFloat(req.body.discount),
-        paid_amount: parseFloat(req.body.paid_amount),
+        discount: additionalDiscount,
+        paid_amount: paidAmount,
         total_product_discount: totalProductDiscount,
         total_product_qty: totalProductQty,
+        round_off_enabled: roundOffEnabled,
+        round_off_amount: roundOffAmount,
         profit:
           totalSalePrice -
           totalProductDiscount -
-          parseFloat(req.body.discount) -
+          additionalDiscount -
           totalPurchasePrice,
-        due_amount:
-          totalSalePrice -
-          totalProductDiscount -
-          parseFloat(req.body.discount) -
-          parseFloat(req.body.paid_amount),
+        due_amount: dueAmount,
         // Update other invoice fields as needed based on req.body
 
         saleInvoiceProduct: {

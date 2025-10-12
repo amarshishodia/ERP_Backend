@@ -52,6 +52,15 @@ const createSingleSaleInvoice = async (req, res) => {
 
       totalProductQty += parseInt(item.product_quantity); // to sum total product quantity
     });
+
+    // Calculate final totals with round off
+    const subtotalAfterProductDiscounts = totalSalePrice - totalProductDiscount;
+    const additionalDiscount = parseFloat(req.body.discount) || 0;
+    const roundOffAmount = parseFloat(req.body.round_off_amount) || 0;
+    const roundOffEnabled = req.body.round_off_enabled || false;
+    const finalTotal = subtotalAfterProductDiscounts - additionalDiscount + roundOffAmount;
+    const paidAmount = parseFloat(req.body.paid_amount) || 0;
+    const dueAmount = finalTotal - paidAmount;
     // get all product asynchronously
     const allProduct = await Promise.all(
       req.body.saleInvoiceProduct.map(async (item) => {
@@ -76,20 +85,18 @@ const createSingleSaleInvoice = async (req, res) => {
       data: {
         date: new Date(date),
         total_amount: totalSalePrice,
-        discount: parseFloat(req.body.discount),
-        paid_amount: parseFloat(req.body.paid_amount),
+        discount: additionalDiscount,
+        paid_amount: paidAmount,
         total_product_discount: totalProductDiscount,
         total_product_qty: totalProductQty,
+        round_off_enabled: roundOffEnabled,
+        round_off_amount: roundOffAmount,
         profit:
           totalSalePrice -
           totalProductDiscount -
-          parseFloat(req.body.discount) -
+          additionalDiscount -
           totalPurchasePrice,
-        due_amount:
-          totalSalePrice -
-          totalProductDiscount -
-          parseFloat(req.body.discount) -
-          parseFloat(req.body.paid_amount),
+        due_amount: dueAmount,
         customer: {
           connect: {
             id: Number(req.body.customer_id),
@@ -126,13 +133,13 @@ const createSingleSaleInvoice = async (req, res) => {
       },
     });
     // new transactions will be created as journal entry for paid amount
-    if (req.body.paid_amount > 0) {
+    if (paidAmount > 0) {
       await prisma.transaction.create({
         data: {
           date: new Date(date),
           debit_id: 1,
           credit_id: 8,
-          amount: parseFloat(req.body.paid_amount),
+          amount: paidAmount,
           particulars: `Cash receive on Sale Invoice #${createdInvoice.id}`,
           type: "sale",
           related_id: createdInvoice.id,
@@ -140,18 +147,13 @@ const createSingleSaleInvoice = async (req, res) => {
       });
     }
     // if sale on due another transactions will be created as journal entry
-    const due_amount =
-      totalSalePrice -
-      parseFloat(req.body.discount) -
-      parseFloat(req.body.paid_amount);
-    // console.log(due_amount);
-    if (due_amount > 0) {
+    if (dueAmount > 0) {
       await prisma.transaction.create({
         data: {
           date: new Date(date),
           debit_id: 4,
           credit_id: 8,
-          amount: due_amount,
+          amount: dueAmount,
           particulars: `Due on Sale Invoice #${createdInvoice.id}`,
           type: "sale",
           related_id: createdInvoice.id,

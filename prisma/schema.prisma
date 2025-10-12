@@ -123,6 +123,9 @@ model purchaseInvoice {
   discount               Float
   paid_amount            Float
   due_amount             Float
+  total_product_discount Float?
+  round_off_enabled      Boolean?                 @default(false)
+  round_off_amount       Float?                   @default(0)
   supplier_id            Int
   note                   String?
   supplier_memo_no       String?
@@ -176,6 +179,8 @@ model saleInvoice {
   customer_id            Int
   user_id                Int
   note                   String?
+  round_off_enabled      Boolean?             @default(false)
+  round_off_amount       Float?               @default(0)
   created_at             DateTime             @default(now())
   updated_at             DateTime             @updatedAt
   invoice_order_date     DateTime?

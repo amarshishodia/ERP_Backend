@@ -3,15 +3,27 @@ const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const createSinglePurchaseInvoice = async (req, res) => {
-  // calculate total purchase price
-  // using purchase price, currency (symbol & conversion), product_quantity and product_discount
+  // calculate total purchase price with product-level discounts
+  // using purchase price, product_quantity and product_discount
   let totalPurchasePrice = 0;
+  let totalProductDiscount = 0;
+  
   req.body.purchaseInvoiceProduct.forEach((item) => {
-    totalPurchasePrice +=
-      parseFloat(item.product_purchase_price) *
-      parseFloat(item.product_quantity);
-      // parseFloat(item.product_currency.conversion);
+    const itemTotal = parseFloat(item.product_purchase_price) * parseFloat(item.product_quantity);
+    const itemDiscount = (itemTotal * parseFloat(item.product_purchase_discount || 0)) / 100;
+    
+    totalPurchasePrice += itemTotal;
+    totalProductDiscount += itemDiscount;
   });
+  
+  // Calculate final amounts
+  const subtotalAfterProductDiscounts = totalPurchasePrice - totalProductDiscount;
+  const billDiscount = parseFloat(req.body.discount || 0);
+  const roundOffAmount = req.body.round_off_enabled ? parseFloat(req.body.round_off_amount || 0) : 0;
+  const paidAmount = parseFloat(req.body.paid_amount || 0);
+  const finalTotal = subtotalAfterProductDiscounts + roundOffAmount;
+  const dueAmount = finalTotal - billDiscount - paidAmount;
+  
   try {
     // convert all incoming data to a specific format.
     const date = new Date(req.body.date).toISOString().split("T")[0];
@@ -19,20 +31,20 @@ const createSinglePurchaseInvoice = async (req, res) => {
     const createdInvoice = await prisma.purchaseInvoice.create({
       data: {
         date: new Date(date),
-        total_amount: totalPurchasePrice,
-        discount: parseFloat(req.body.discount),
-        paid_amount: parseFloat(req.body.paid_amount),
-        due_amount:
-          totalPurchasePrice -
-          parseFloat(req.body.discount) -
-          parseFloat(req.body.paid_amount),
+        total_amount: finalTotal,
+        discount: billDiscount,
+        paid_amount: paidAmount,
+        due_amount: dueAmount,
+        total_product_discount: totalProductDiscount,
+        round_off_enabled: req.body.round_off_enabled || false,
+        round_off_amount: roundOffAmount,
         supplier: {
           connect: {
             id: Number(req.body.supplier_id),
           },
         },
-        note: req.body.note,
-        supplier_memo_no: req.body.supplier_memo_no,
+        note: req.body.note || null,
+        supplier_memo_no: req.body.supplier_memo_no || null,
         // map and save all products from request body array of products to database
         purchaseInvoiceProduct: {
           create: req.body.purchaseInvoiceProduct.map((product) => ({
@@ -43,24 +55,19 @@ const createSinglePurchaseInvoice = async (req, res) => {
             },
             product_quantity: Number(product.product_quantity),
             product_purchase_price: parseFloat(product.product_purchase_price),
-            product_purchase_discount: parseFloat(product.product_purchase_discount)
-            
-            // product_discount: parseFloat(product.product_discount),
-          }
-
-          )),
-          
+            product_purchase_discount: parseFloat(product.product_purchase_discount || 0)
+          })),
         }, 
       },
     });
     // pay on purchase transaction create
-    if (req.body.paid_amount > 0) {
+    if (paidAmount > 0) {
       await prisma.transaction.create({
         data: {
           date: new Date(date),
           debit_id: 3,
           credit_id: 1,
-          amount: parseFloat(req.body.paid_amount),
+          amount: paidAmount,
           particulars: `Cash paid on Purchase Invoice #${createdInvoice.id}`,
           type: "purchase",
           related_id: createdInvoice.id,
@@ -68,18 +75,13 @@ const createSinglePurchaseInvoice = async (req, res) => {
       });
     }
     // if purchase on due then create another transaction
-    const due_amount =
-      totalPurchasePrice -
-      parseFloat(req.body.discount) -
-      parseFloat(req.body.paid_amount);
-    console.log(due_amount);
-    if (due_amount > 0) {
+    if (dueAmount > 0) {
       await prisma.transaction.create({
         data: {
           date: new Date(date),
           debit_id: 3,
           credit_id: 5,
-          amount: due_amount,
+          amount: dueAmount,
           particulars: `Due on Purchase Invoice #${createdInvoice.id}`,
           type: "purchase",
           related_id: createdInvoice.id,
@@ -296,7 +298,11 @@ const getSinglePurchaseInvoice = async (req, res) => {
       include: {
         purchaseInvoiceProduct: {
           include: {
-            product: true,
+            product: {
+              include: {
+                book_publisher: true,
+              },
+            },
             // product_discount: true,
           },
         },
@@ -315,6 +321,18 @@ const getSinglePurchaseInvoice = async (req, res) => {
             type: "purchase_return",
           },
         ],
+      },
+      include: {
+        debit: {
+          select: {
+            name: true,
+          },
+        },
+        credit: {
+          select: {
+            name: true,
+          },
+        },
       },
     });
     // transactions of the paid amount
