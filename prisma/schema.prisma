@@ -26,8 +26,10 @@ model user {
   status         Boolean       @default(true)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
-  saleInvoice    saleInvoice[]
-  designation    designation?  @relation(fields: [designation_id], references: [id])
+  saleInvoice      saleInvoice[]
+  quotationInvoice quotationInvoice[]
+  challanInvoice   challanInvoice[]
+  designation      designation?        @relation(fields: [designation_id], references: [id])
 
   @@index([designation_id], map: "user_designation_id_fkey")
 }
@@ -66,6 +68,8 @@ model product {
   returnPurchaseInvoiceProduct returnPurchaseInvoiceProduct[]
   returnSaleInvoiceProduct     returnSaleInvoiceProduct[]
   saleInvoiceProduct           saleInvoiceProduct[]
+  quotationInvoiceProduct      quotationInvoiceProduct[]
+  challanInvoiceProduct        challanInvoiceProduct[]
 
   @@index([book_publisher_id], map: "product_book_publisher_id_fkey")
   @@index([product_category_id], map: "product_product_category_id_fkey")
@@ -155,14 +159,16 @@ model purchaseInvoiceProduct {
 }
 
 model customer {
-  id          Int           @id @default(autoincrement())
-  name        String
-  phone       String        @unique
-  address     String
-  status      Boolean       @default(true)
-  created_at  DateTime      @default(now())
-  updated_at  DateTime      @updatedAt
-  saleInvoice saleInvoice[]
+  id                 Int                   @id @default(autoincrement())
+  name               String
+  phone              String                @unique
+  address            String
+  status             Boolean               @default(true)
+  created_at         DateTime              @default(now())
+  updated_at         DateTime              @updatedAt
+  saleInvoice        saleInvoice[]
+  quotationInvoice   quotationInvoice[]
+  challanInvoice     challanInvoice[]
 }
 
 model saleInvoice {
@@ -343,20 +349,114 @@ model returnSaleInvoiceProduct {
   @@index([product_id], map: "returnSaleInvoiceProduct_product_id_fkey")
 }
 
+model quotationInvoice {
+  id                     Int                        @id @default(autoincrement())
+  date                   DateTime
+  invoice_number         Int
+  total_amount           Float
+  discount               Float
+  total_product_discount Float?
+  total_product_qty      Int?
+  customer_id            Int
+  user_id                Int
+  note                   String?
+  round_off_enabled      Boolean?                   @default(false)
+  round_off_amount       Float?                     @default(0)
+  created_at             DateTime                   @default(now())
+  updated_at             DateTime                   @updatedAt
+  invoice_order_date     DateTime?
+  invoice_order_number   String?
+  prefix                 String?
+  customer               customer                   @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  user                   user                       @relation(fields: [user_id], references: [id], onDelete: NoAction)
+  quotationInvoiceProduct quotationInvoiceProduct[]
+
+  @@index([customer_id], map: "quotationInvoice_customer_id_fkey")
+  @@index([user_id], map: "quotationInvoice_user_id_fkey")
+}
+
+model quotationInvoiceProduct {
+  id                      Int              @id @default(autoincrement())
+  product_id              Int
+  invoice_id              Int
+  product_quantity        Int
+  product_sale_price       Float
+  product_sale_discount    Float?
+  product_sale_currency    String?
+  product_sale_conversion  Float?
+  created_at              DateTime         @default(now())
+  updated_at              DateTime          @updatedAt
+  product                 product           @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  quotationInvoice        quotationInvoice @relation(fields: [invoice_id], references: [id])
+
+  @@index([invoice_id], map: "quotationInvoiceProduct_invoice_id_fkey")
+  @@index([product_id], map: "quotationInvoiceProduct_product_id_fkey")
+}
+
+model challanInvoice {
+  id                     Int                   @id @default(autoincrement())
+  date                   DateTime
+  invoice_number         Int
+  total_amount           Float
+  discount               Float
+  total_product_discount Float?
+  total_product_qty      Int?
+  customer_id            Int
+  user_id                Int
+  note                   String?
+  round_off_enabled      Boolean?             @default(false)
+  round_off_amount       Float?               @default(0)
+  created_at             DateTime              @default(now())
+  updated_at             DateTime              @updatedAt
+  invoice_order_date     DateTime?
+  invoice_order_number    String?
+  prefix                 String?
+  customer               customer              @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  user                   user                  @relation(fields: [user_id], references: [id], onDelete: NoAction)
+  challanInvoiceProduct  challanInvoiceProduct[]
+
+  @@index([customer_id], map: "challanInvoice_customer_id_fkey")
+  @@index([user_id], map: "challanInvoice_user_id_fkey")
+}
+
+model challanInvoiceProduct {
+  id                      Int             @id @default(autoincrement())
+  product_id              Int
+  invoice_id              Int
+  product_quantity        Int
+  product_sale_price      Float
+  product_sale_discount   Float?
+  product_sale_currency   String?
+  product_sale_conversion Float?
+  created_at              DateTime        @default(now())
+  updated_at              DateTime        @updatedAt
+  product                 product         @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  challanInvoice          challanInvoice  @relation(fields: [invoice_id], references: [id])
+
+  @@index([invoice_id], map: "challanInvoiceProduct_invoice_id_fkey")
+  @@index([product_id], map: "challanInvoiceProduct_product_id_fkey")
+}
+
 model appSetting {
-  id             Int     @id @default(autoincrement())
-  company_name   String
-  tag_line       String?
-  address        String
-  phone          String
-  email          String?
-  website        String?
-  bank_name      String?
-  account_name   String?
-  account_number String?
-  ifsc           String?
-  terms          String? @db.LongText
-  logo           String?
+  id                 Int     @id @default(autoincrement())
+  company_name       String
+  tag_line           String?
+  address            String
+  phone              String
+  email              String?
+  website            String?
+  bank_name          String?
+  account_name       String?
+  account_number     String?
+  ifsc               String?
+  terms              String? @db.LongText
+  logo               String?
+  sale_invoice_prefix String? @default("INV/25-26/")
+  quotation_prefix   String? @default("QTN/25-26/")
+  challan_prefix      String? @default("CHL/25-26/")
+  sale_invoice_terms  String? @db.LongText
+  quotation_terms     String? @db.LongText
+  challan_terms       String? @db.LongText
 }
 
 model firm {

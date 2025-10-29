@@ -13,6 +13,8 @@ const purchaseInvoiceRoutes = require("./routes/purchase/purchaseInvoice/purchas
 const returnPurchaseInvoiceRoutes = require("./routes/purchase/returnPurchaseInvoice/returnPurchaseInvoice.routes");
 const rolePermissionRoutes = require("./routes/hr/rolePermission/rolePermission.routes");
 const saleInvoiceRoutes = require("./routes/sale/saleInvoice/saleInvoice.routes");
+const quotationRoutes = require("./routes/sale/quotationInvoice/quotationInvoice.routes");
+const challanRoutes = require("./routes/sale/challanInvoice/challanInvoice.routes");
 const transactionRoutes = require("./routes/accounting/transaction/transaction.routes");
 const permissionRoutes = require("./routes/hr/permission/permission.routes");
 const dashboardRoutes = require("./routes/dashboard/dashboard.routes");
@@ -95,6 +97,8 @@ app.use("/v1/purchase-invoice", purchaseInvoiceRoutes);
 app.use("/v1/return-purchase-invoice", returnPurchaseInvoiceRoutes);
 app.use("/v1/role-permission", rolePermissionRoutes);
 app.use("/v1/sale-invoice", saleInvoiceRoutes);
+app.use("/v1/quotation", quotationRoutes);
+app.use("/v1/challan", challanRoutes);
 app.use("/v1/return-sale-invoice", returnSaleInvoiceRoutes);
 app.use("/v1/transaction", transactionRoutes);
 app.use("/v1/permission", permissionRoutes);
