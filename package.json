@@ -31,6 +31,7 @@
     "express-jwt": "^7.7.5",
     "express-rate-limit": "^6.6.0",
     "helmet": "^5.1.1",
+    "jsonrepair": "^3.3.1",
     "husky": "^8.0.1",
     "moment": "^2.29.4",
     "morgan": "^1.10.0",

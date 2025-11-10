@@ -5,6 +5,10 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const pdf = require('pdf-parse');
+const { jsonrepair } = require('jsonrepair');
+
+const MAX_OPENAI_INPUT_LENGTH = 200000; // ~50k tokens approximation
+const TEXT_CHUNK_SIZE = 14000;
 
 // Initialize OpenAI
 const openai = new OpenAI({
@@ -47,6 +51,46 @@ const encodeImage = (imagePath) => {
   return imageBuffer.toString('base64');
 };
 
+const mergeExtractedData = (target, source) => {
+  if (!source || typeof source !== 'object') return target;
+
+  if (!target.supplier && source.supplier) {
+    target.supplier = source.supplier;
+  }
+  if (!target.billDate && source.billDate) {
+    target.billDate = source.billDate;
+  }
+  if (!target.billNumber && source.billNumber) {
+    target.billNumber = source.billNumber;
+  }
+  if (Array.isArray(source.products) && source.products.length) {
+    target.products = target.products.concat(source.products);
+  }
+
+  return target;
+};
+
+const analyzeLargeTextContent = async (content) => {
+  const chunks = [];
+  for (let i = 0; i < content.length; i += TEXT_CHUNK_SIZE) {
+    chunks.push(content.slice(i, i + TEXT_CHUNK_SIZE));
+  }
+
+  let aggregated = {
+    supplier: null,
+    billDate: null,
+    billNumber: null,
+    products: [],
+  };
+
+  for (const chunk of chunks) {
+    const chunkResult = await analyzeBillContent(chunk, 'text_chunk');
+    aggregated = mergeExtractedData(aggregated, chunkResult);
+  }
+
+  return aggregated;
+};
+
 // Function to extract text from PDF
 const extractTextFromPDF = async (pdfPath) => {
   try {
@@ -68,8 +112,15 @@ const analyzeBillContent = async (content, contentType = 'image') => {
     }
 
     // Validate content
-    if (!content || content.trim() === '') {
+    if (!content || (typeof content === 'string' && content.trim() === '')) {
       throw new Error('No content provided for analysis');
+    }
+
+    if (typeof content === 'string' && content.length > MAX_OPENAI_INPUT_LENGTH) {
+      if (contentType === 'text') {
+        return await analyzeLargeTextContent(content);
+      }
+      throw new Error('Bill content exceeds the maximum size supported for analysis. Please upload a smaller file or a PDF with selectable text.');
     }
 
     let messages;
@@ -123,8 +174,8 @@ const analyzeBillContent = async (content, contentType = 'image') => {
           ]
         }
       ];
-    } else {
-      // For text content (PDF)
+    } else if (contentType === 'text') {
+      // For text content extracted from PDF
       messages = [
         {
           role: "system",
@@ -162,21 +213,92 @@ const analyzeBillContent = async (content, contentType = 'image') => {
           content: `Please analyze this purchase bill/invoice text and extract the information as requested:\n\n${content}`
         }
       ];
+    } else if (contentType === 'text_chunk') {
+      messages = [
+        {
+          role: "system",
+          content: `You are an AI assistant that extracts information from purchase bills/invoices for books.
+          You will receive a portion of the bill text. Extract whatever relevant information you can find from this portion and return it as JSON with the structure:
+          {
+            "supplier": { ... },
+            "billDate": "...",
+            "billNumber": "...",
+            "products": [ ... ]
+          }
+          If a field cannot be determined from this chunk, set it to null (or 0 for numeric fields).`
+        },
+        {
+          role: "user",
+          content: `Bill text chunk:\n\n${content}`
+        }
+      ];
+    } else if (contentType === 'pdf') {
+      messages = [
+        {
+          role: "system",
+          content: `You are an AI assistant that extracts structured information from purchase bills/invoices for books.
+          You will receive a PDF document encoded as a base64 string. Decode the PDF, read its contents (including running OCR if the PDF contains scanned images), and extract the following information.
+          Return your answer strictly as JSON:
+          {
+            "supplier": {
+              "name": "supplier name",
+              "phone": "phone number",
+              "address": "full address"
+            },
+            "billDate": "YYYY-MM-DD format",
+            "billNumber": "bill/invoice number",
+            "products": [
+              {
+                "isbn": "ISBN number",
+                "title": "book title",
+                "author": "author name",
+                "publisher": "publisher name",
+                "quantity": number,
+                "price": number,
+                "currency": "currency symbol or code",
+                "discount": number (percentage)
+              }
+            ]
+          }
+          
+          If any field is not found, use null for strings/objects or 0 for numbers.
+          For currency, try to identify the symbol (₹, $, €, etc.) or code (INR, USD, EUR, etc.).
+          For ISBN, look for 10 or 13 digit numbers, often prefixed with "ISBN".
+          Be very careful to extract accurate numerical values for price and quantity.`
+        },
+        {
+          role: "user",
+          content: `The purchase invoice PDF is provided below as a base64 encoded string. Decode it and extract the required information.\n\n${content}`
+        }
+      ];
     }
 
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
       messages: messages,
-      max_tokens: 2000,
+      max_tokens: 5000,
       temperature: 0.1,
     });
 
     const extractedText = response.choices[0].message.content;
+    if (!extractedText) {
+      throw new Error('Received empty response from AI');
+    }
     
     // Try to parse JSON from the response
     let jsonMatch = extractedText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+      try {
+        return JSON.parse(jsonMatch[0]);
+      } catch (parseError) {
+        try {
+          const repairedJson = jsonrepair(jsonMatch[0]);
+          return JSON.parse(repairedJson);
+        } catch (repairError) {
+          console.error('Failed to repair JSON:', repairError);
+          throw new Error('Could not extract valid JSON from AI response');
+        }
+      }
     } else {
       throw new Error('Could not extract valid JSON from AI response');
     }
@@ -343,6 +465,12 @@ const analyzeBill = async (req, res) => {
       if (file.mimetype === 'application/pdf') {
         content = await extractTextFromPDF(file.path);
         contentType = 'text';
+
+        if (!content || content.trim() === '') {
+          const pdfBase64 = fs.readFileSync(file.path).toString('base64');
+          content = pdfBase64;
+          contentType = 'pdf';
+        }
       } else {
         content = encodeImage(file.path);
         contentType = 'image';
