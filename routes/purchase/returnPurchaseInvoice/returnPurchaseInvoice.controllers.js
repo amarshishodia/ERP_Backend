@@ -3,13 +3,8 @@ const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const createSingleReturnPurchaseInvoice = async (req, res) => {
-  // calculate total purchase price
+  // calculate total purchase price (NET after product-level discount from original purchase)
   let totalPurchasePrice = 0;
-  req.body.returnPurchaseInvoiceProduct.forEach((item) => {
-    totalPurchasePrice +=
-      parseFloat(item.product_purchase_price) *
-      parseFloat(item.product_quantity);
-  });
   try {
     // ============ DUE AMOUNT CALCULATION START==============================================
     // get single purchase invoice information with products
@@ -17,7 +12,29 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
       where: {
         id: Number(req.body.purchaseInvoice_id),
       },
+      include: {
+        purchaseInvoiceProduct: true,
+      },
     });
+    // map product_id -> discount% from original purchase
+    const productIdToDiscount = new Map(
+      singlePurchaseInvoice.purchaseInvoiceProduct.map((p) => [
+        p.product_id,
+        parseFloat(p.product_purchase_discount || 0),
+      ])
+    );
+    // compute net return amount considering original discount
+    totalPurchasePrice = req.body.returnPurchaseInvoiceProduct.reduce(
+      (sum, item) => {
+        const price = parseFloat(item.product_purchase_price);
+        const qty = parseFloat(item.product_quantity);
+        const gross = price * qty;
+        const discountPct = productIdToDiscount.get(Number(item.product_id)) || 0;
+        const discountAmt = (gross * discountPct) / 100;
+        return sum + (gross - discountAmt);
+      },
+      0
+    );
     // transactions of the paid amount
     const transactions2 = await prisma.transaction.findMany({
       where: {
@@ -127,9 +144,11 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
                 },
               },
               product_quantity: Number(product.product_quantity),
-              product_purchase_price: parseFloat(
-                product.product_purchase_price
-              ),
+              product_purchase_price: parseFloat(product.product_purchase_price),
+              product_discount:
+                product.product_purchase_discount !== undefined
+                  ? parseFloat(product.product_purchase_discount || 0)
+                  : (productIdToDiscount.get(Number(product.product_id)) || 0),
             })),
           },
         },
