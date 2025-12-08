@@ -601,13 +601,10 @@ const getAllSaleInvoice = async (req, res) => {
           ...item,
           paid_amount: paidAmount,
           discount: item.discount + discountGiven,
-          due_amount:
-            item.total_amount -
-            item.discount -
-            paidAmount -
-            returnAmount +
-            paidAmountReturn -
-            discountGiven,
+          // item.total_amount already includes discount and round_off_amount
+          // So we only need to subtract payments, returns, and additional discounts given at payment time
+          // 
+          due_amount: item.due_amount,
           total_unit_measurement: totalUnitMeasurement,
         };
       });
@@ -829,13 +826,14 @@ const getSingleSaleInvoice = async (req, res) => {
     console.log(totalDiscountAmount);
     console.log(totalReturnAmount);
     console.log(paidAmountReturn);
-    const dueAmount =
-      singleSaleInvoice.total_amount -
-      singleSaleInvoice.discount -
-      totalPaidAmount -
-      totalDiscountAmount -
-      totalReturnAmount +
-      paidAmountReturn;
+    // const dueAmount =
+    //   singleSaleInvoice.total_amount -
+    //   singleSaleInvoice.discount -
+    //   totalPaidAmount -
+    //   totalDiscountAmount -
+    //   totalReturnAmount +
+    //   paidAmountReturn;
+    const dueAmount = singleSaleInvoice.due_amount;
     if (dueAmount === 0) {
       status = "PAID";
     }
