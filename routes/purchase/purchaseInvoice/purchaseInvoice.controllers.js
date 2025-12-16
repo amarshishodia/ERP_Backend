@@ -89,7 +89,23 @@ const createSinglePurchaseInvoice = async (req, res) => {
       });
     }
     // iterate through all products of this purchase invoice and add product quantity, update product purchase price to database
+    // Calculate effective purchase price considering both product discount and bill discount
     req.body.purchaseInvoiceProduct.forEach(async (item) => {
+      // Calculate price after product-level discount
+      const itemTotal = parseFloat(item.product_purchase_price) * parseFloat(item.product_quantity);
+      const itemProductDiscount = (itemTotal * parseFloat(item.product_purchase_discount || 0)) / 100;
+      const itemPriceAfterProductDiscount = itemTotal - itemProductDiscount;
+      
+      // Calculate proportional bill discount for this product
+      // Bill discount is allocated proportionally based on each product's contribution to subtotalAfterProductDiscounts
+      const billDiscountAllocation = subtotalAfterProductDiscounts > 0 
+        ? (itemPriceAfterProductDiscount / subtotalAfterProductDiscounts) * billDiscount
+        : 0;
+      
+      // Calculate effective price per unit after all discounts
+      const effectiveTotalPrice = itemPriceAfterProductDiscount - billDiscountAllocation;
+      const effectivePricePerUnit = effectiveTotalPrice / parseFloat(item.product_quantity);
+      
       await prisma.product.update({
         where: {
           id: Number(item.product_id),
@@ -99,7 +115,7 @@ const createSinglePurchaseInvoice = async (req, res) => {
             increment: Number(item.product_quantity),
           },
           purchase_price: {
-            set: parseFloat(item.product_purchase_price),
+            set: parseFloat(effectivePricePerUnit.toFixed(2)),
           },
           // product_discount: {
           //   set: parseFloat(item.product_discount),

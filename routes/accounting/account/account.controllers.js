@@ -32,12 +32,12 @@ const getAllAccount = async (req, res) => {
       include: {
         subAccount: {
           include: {
-            debit: {
+            debitTransactions: {
               where: {
                 status: true,
               },
             },
-            credit: {
+            creditTransactions: {
               where: {
                 status: true,
               },
@@ -50,10 +50,10 @@ const getAllAccount = async (req, res) => {
     let tb = {};
     const accountInfo = allAccount.map((account) => {
       return account.subAccount.map((subAccount) => {
-        const totalDebit = subAccount.debit.reduce((acc, debit) => {
+        const totalDebit = subAccount.debitTransactions.reduce((acc, debit) => {
           return acc + debit.amount;
         }, 0);
-        const totalCredit = subAccount.credit.reduce((acc, credit) => {
+        const totalCredit = subAccount.creditTransactions.reduce((acc, credit) => {
           return acc + credit.amount;
         }, 0);
         return (tb = {
@@ -104,12 +104,12 @@ const getAllAccount = async (req, res) => {
       include: {
         subAccount: {
           include: {
-            debit: {
+            debitTransactions: {
               where: {
                 status: true,
               },
             },
-            credit: {
+            creditTransactions: {
               where: {
                 status: true,
               },
@@ -122,10 +122,10 @@ const getAllAccount = async (req, res) => {
     let tb = {};
     const accountInfo = allAccount.map((account) => {
       return account.subAccount.map((subAccount) => {
-        const totalDebit = subAccount.debit.reduce((acc, debit) => {
+        const totalDebit = subAccount.debitTransactions.reduce((acc, debit) => {
           return acc + debit.amount;
         }, 0);
-        const totalCredit = subAccount.credit.reduce((acc, credit) => {
+        const totalCredit = subAccount.creditTransactions.reduce((acc, credit) => {
           return acc + credit.amount;
         }, 0);
         return (tb = {
@@ -198,12 +198,12 @@ const getAllAccount = async (req, res) => {
       include: {
         subAccount: {
           include: {
-            debit: {
+            debitTransactions: {
               where: {
                 status: true,
               },
             },
-            credit: {
+            creditTransactions: {
               where: {
                 status: true,
               },
@@ -216,10 +216,10 @@ const getAllAccount = async (req, res) => {
     let tb = {};
     const accountInfo = allAccount.map((account) => {
       return account.subAccount.map((subAccount) => {
-        const totalDebit = subAccount.debit.reduce((acc, debit) => {
+        const totalDebit = subAccount.debitTransactions.reduce((acc, debit) => {
           return acc + debit.amount;
         }, 0);
-        const totalCredit = subAccount.credit.reduce((acc, credit) => {
+        const totalCredit = subAccount.creditTransactions.reduce((acc, credit) => {
           return acc + credit.amount;
         }, 0);
         return (tb = {
@@ -317,8 +317,8 @@ const getAllAccount = async (req, res) => {
         include: {
           subAccount: {
             include: {
-              debit: true,
-              credit: true,
+              debitTransactions: true,
+              creditTransactions: true,
             },
           },
         },
@@ -337,16 +337,16 @@ const getSingleAccount = async (req, res) => {
       where: {
         id: Number(req.params.id),
       },
-      include: {
-        debit: true,
-        credit: true,
-      },
+          include: {
+            debitTransactions: true,
+            creditTransactions: true,
+          },
     });
     // calculate balance from total debit and credit
-    const totalDebit = singleAccount.debit.reduce((acc, debit) => {
+    const totalDebit = singleAccount.debitTransactions.reduce((acc, debit) => {
       return acc + debit.amount;
     }, 0);
-    const totalCredit = singleAccount.credit.reduce((acc, credit) => {
+    const totalCredit = singleAccount.creditTransactions.reduce((acc, credit) => {
       return acc + credit.amount;
     }, 0);
     const balance = totalDebit - totalCredit;
