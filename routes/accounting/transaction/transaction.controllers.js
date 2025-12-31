@@ -6,26 +6,48 @@ const createSingleTransaction = async (req, res) => {
   try {
     // convert all incoming data to a specific format.
     const date = new Date(req.body.date).toISOString().split("T")[0];
+    
+    // Get sub-account IDs (the form sends sub-account IDs as debit_id and credit_id)
+    const subDebitId = Number(req.body.debit_id);
+    const subCreditId = Number(req.body.credit_id);
+    
+    // Fetch sub-accounts to get their main account IDs
+    const subDebitAccount = await prisma.subAccount.findUnique({
+      where: { id: subDebitId },
+      select: { account_id: true }
+    });
+    
+    const subCreditAccount = await prisma.subAccount.findUnique({
+      where: { id: subCreditId },
+      select: { account_id: true }
+    });
+    
+    if (!subDebitAccount || !subCreditAccount) {
+      return res.status(400).json({ error: "Invalid sub-account IDs provided" });
+    }
+    
     const createdTransaction = await prisma.transaction.create({
       data: {
         date: new Date(date),
         debit: {
           connect: {
-            id: Number(req.body.debit_id),
+            id: subDebitAccount.account_id,
           },
         },
         credit: {
           connect: {
-            id: Number(req.body.credit_id),
+            id: subCreditAccount.account_id,
           },
         },
+        sub_debit_id: subDebitId,
+        sub_credit_id: subCreditId,
         particulars: req.body.particulars,
         amount: parseFloat(req.body.amount),
       },
     });
     res.status(200).json(createdTransaction);
   } catch (error) {
-    res.status(400).json(error.message);
+    res.status(400).json({ error: error.message });
     console.log(error.message);
   }
 };

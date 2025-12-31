@@ -19,6 +19,8 @@ const createPaymentPurchaseInvoice = async (req, res) => {
         particulars: `Due pay of Purchase Invoice #${req.body.purchase_invoice_no}`,
         type: "purchase",
         related_id: parseInt(req.body.purchase_invoice_no),
+        payment_method: req.body.payment_method || null,
+        reference_number: req.body.reference_number || null,
       },
     });
     // discount earned using a transaction
@@ -33,6 +35,8 @@ const createPaymentPurchaseInvoice = async (req, res) => {
           particulars: `Discount earned of Purchase Invoice #${req.body.purchase_invoice_no}`,
           type: "purchase",
           related_id: parseInt(req.body.purchase_invoice_no),
+          payment_method: req.body.payment_method || null,
+          reference_number: req.body.reference_number || null,
         },
       });
     }

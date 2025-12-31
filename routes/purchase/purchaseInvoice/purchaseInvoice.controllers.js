@@ -1,6 +1,7 @@
 const { getPagination } = require("../../../utils/query");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
+const { createTransactionWithSubAccounts } = require("../../../utils/transactionHelper");
 
 const createSinglePurchaseInvoice = async (req, res) => {
   // calculate total purchase price with product-level discounts
@@ -62,30 +63,26 @@ const createSinglePurchaseInvoice = async (req, res) => {
     });
     // pay on purchase transaction create
     if (paidAmount > 0) {
-      await prisma.transaction.create({
-        data: {
-          date: new Date(date),
-          debit_id: 3,
-          credit_id: 1,
-          amount: paidAmount,
-          particulars: `Cash paid on Purchase Invoice #${createdInvoice.id}`,
-          type: "purchase",
-          related_id: createdInvoice.id,
-        },
+      await createTransactionWithSubAccounts({
+        date: new Date(date),
+        sub_debit_id: 3, // Inventory
+        sub_credit_id: 1, // Cash
+        amount: paidAmount,
+        particulars: `Cash paid on Purchase Invoice #${createdInvoice.id}`,
+        type: "purchase",
+        related_id: createdInvoice.id,
       });
     }
     // if purchase on due then create another transaction
     if (dueAmount > 0) {
-      await prisma.transaction.create({
-        data: {
-          date: new Date(date),
-          debit_id: 3,
-          credit_id: 5,
-          amount: dueAmount,
-          particulars: `Due on Purchase Invoice #${createdInvoice.id}`,
-          type: "purchase",
-          related_id: createdInvoice.id,
-        },
+      await createTransactionWithSubAccounts({
+        date: new Date(date),
+        sub_debit_id: 3, // Inventory
+        sub_credit_id: 5, // Accounts Payable
+        amount: dueAmount,
+        particulars: `Due on Purchase Invoice #${createdInvoice.id}`,
+        type: "purchase",
+        related_id: createdInvoice.id,
       });
     }
     // iterate through all products of this purchase invoice and add product quantity, update product purchase price to database

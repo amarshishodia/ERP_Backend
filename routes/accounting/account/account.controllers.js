@@ -23,251 +23,261 @@ const createSingleAccount = async (req, res) => {
 
 const getAllAccount = async (req, res) => {
   if (req.query.query === "tb") {
-    const allAccount = await prisma.account.findMany({
-      orderBy: [
-        {
-          id: "asc",
-        },
-      ],
-      include: {
-        subAccount: {
-          include: {
-            debitTransactions: {
-              where: {
-                status: true,
+    try {
+      const allAccount = await prisma.account.findMany({
+        orderBy: [
+          {
+            id: "asc",
+          },
+        ],
+        include: {
+          subAccount: {
+            include: {
+              debitTransactions: {
+                where: {
+                  status: true,
+                },
               },
-            },
-            creditTransactions: {
-              where: {
-                status: true,
+              creditTransactions: {
+                where: {
+                  status: true,
+                },
               },
             },
           },
         },
-      },
-    });
-    // some up all debit and credit amount from each subAccount and add it to every subAccount object
-    let tb = {};
-    const accountInfo = allAccount.map((account) => {
-      return account.subAccount.map((subAccount) => {
-        const totalDebit = subAccount.debitTransactions.reduce((acc, debit) => {
-          return acc + debit.amount;
-        }, 0);
-        const totalCredit = subAccount.creditTransactions.reduce((acc, credit) => {
-          return acc + credit.amount;
-        }, 0);
-        return (tb = {
-          account: account.name,
-          subAccount: subAccount.name,
-          totalDebit,
-          totalCredit,
-          balance: totalDebit - totalCredit,
+      });
+      // some up all debit and credit amount from each subAccount and add it to every subAccount object
+      let tb = {};
+      const accountInfo = allAccount.map((account) => {
+        return account.subAccount.map((subAccount) => {
+          const totalDebit = subAccount.debitTransactions.reduce((acc, debit) => {
+            return acc + debit.amount;
+          }, 0);
+          const totalCredit = subAccount.creditTransactions.reduce((acc, credit) => {
+            return acc + credit.amount;
+          }, 0);
+          return (tb = {
+            account: account.name,
+            subAccount: subAccount.name,
+            totalDebit,
+            totalCredit,
+            balance: totalDebit - totalCredit,
+          });
         });
       });
-    });
-    // transform accountInfo into an single array
-    const trialBalance = accountInfo.flat();
-    let debits = [];
-    let credits = [];
-    trialBalance.forEach((item) => {
-      if (item.balance > 0) {
-        debits.push(item);
-      }
-      if (item.balance < 0) {
-        credits.push(item);
-      }
-    });
-    //some up all debit and credit balance
-    const totalDebit = debits.reduce((acc, debit) => {
-      return acc + debit.balance;
-    }, 0);
-    const totalCredit = credits.reduce((acc, credit) => {
-      return acc + credit.balance;
-    }, 0);
+      // transform accountInfo into an single array
+      const trialBalance = accountInfo.flat();
+      let debits = [];
+      let credits = [];
+      trialBalance.forEach((item) => {
+        if (item.balance > 0) {
+          debits.push(item);
+        }
+        if (item.balance < 0) {
+          // Convert negative balance to positive for credits display
+          credits.push({
+            ...item,
+            balance: Math.abs(item.balance),
+          });
+        }
+      });
+      //some up all debit and credit balance
+      const totalDebit = debits.reduce((acc, debit) => {
+        return acc + debit.balance;
+      }, 0);
+      const totalCredit = credits.reduce((acc, credit) => {
+        return acc + credit.balance;
+      }, 0);
 
-    // check if total debit is equal to total credit
-    let match = true;
-    if (-totalDebit === totalCredit) {
-      match = true;
-    } else {
-      match = false;
+      // check if total debit is equal to total credit
+      let match = totalDebit === totalCredit;
+      
+      res.json({ match, totalDebit, totalCredit, debits, credits });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+      console.log(error.message);
     }
-    // res.json(allAccount);
-    res.json({ match, totalDebit, totalCredit, debits, credits });
   } else if (req.query.query === "bs") {
-    const allAccount = await prisma.account.findMany({
-      orderBy: [
-        {
-          id: "asc",
-        },
-      ],
-      include: {
-        subAccount: {
-          include: {
-            debitTransactions: {
-              where: {
-                status: true,
+    try {
+      const allAccount = await prisma.account.findMany({
+        orderBy: [
+          {
+            id: "asc",
+          },
+        ],
+        include: {
+          subAccount: {
+            include: {
+              debitTransactions: {
+                where: {
+                  status: true,
+                },
               },
-            },
-            creditTransactions: {
-              where: {
-                status: true,
+              creditTransactions: {
+                where: {
+                  status: true,
+                },
               },
             },
           },
         },
-      },
-    });
-    // some up all debit and credit amount from each subAccount and add it to every subAccount object
-    let tb = {};
-    const accountInfo = allAccount.map((account) => {
-      return account.subAccount.map((subAccount) => {
-        const totalDebit = subAccount.debitTransactions.reduce((acc, debit) => {
-          return acc + debit.amount;
-        }, 0);
-        const totalCredit = subAccount.creditTransactions.reduce((acc, credit) => {
-          return acc + credit.amount;
-        }, 0);
-        return (tb = {
-          account: account.type,
-          subAccount: subAccount.name,
-          totalDebit,
-          totalCredit,
-          balance: totalDebit - totalCredit,
+      });
+      // some up all debit and credit amount from each subAccount and add it to every subAccount object
+      let tb = {};
+      const accountInfo = allAccount.map((account) => {
+        return account.subAccount.map((subAccount) => {
+          const totalDebit = subAccount.debitTransactions.reduce((acc, debit) => {
+            return acc + debit.amount;
+          }, 0);
+          const totalCredit = subAccount.creditTransactions.reduce((acc, credit) => {
+            return acc + credit.amount;
+          }, 0);
+          return (tb = {
+            account: account.type,
+            subAccount: subAccount.name,
+            totalDebit,
+            totalCredit,
+            balance: totalDebit - totalCredit,
+          });
         });
       });
-    });
-    // transform accountInfo into an single array
-    const balanceSheet = accountInfo.flat();
-    let assets = [];
-    let liabilities = [];
-    let equity = [];
-    balanceSheet.forEach((item) => {
-      if (item.account === "Asset" && item.balance !== 0) {
-        assets.push(item);
-      }
-      if (item.account === "Liability" && item.balance !== 0) {
-        // convert negative balance to positive and vice versa
-        liabilities.push({
-          ...item,
-          balance: -item.balance,
-        });
-      }
-      if (item.account === "Owner's Equity" && item.balance !== 0) {
-        // convert negative balance to positive and vice versa
-        equity.push({
-          ...item,
-          balance: -item.balance,
-        });
-      }
-    });
-    //some up all asset, liability and equity balance
-    const totalAsset = assets.reduce((acc, asset) => {
-      return acc + asset.balance;
-    }, 0);
-    const totalLiability = liabilities.reduce((acc, liability) => {
-      return acc + liability.balance;
-    }, 0);
-    const totalEquity = equity.reduce((acc, equity) => {
-      return acc + equity.balance;
-    }, 0);
+      // transform accountInfo into an single array
+      const balanceSheet = accountInfo.flat();
+      let assets = [];
+      let liabilities = [];
+      let equity = [];
+      balanceSheet.forEach((item) => {
+        if (item.account === "Asset" && item.balance !== 0) {
+          assets.push(item);
+        }
+        if (item.account === "Liability" && item.balance !== 0) {
+          // convert negative balance to positive and vice versa
+          liabilities.push({
+            ...item,
+            balance: -item.balance,
+          });
+        }
+        if (item.account === "Owner's Equity" && item.balance !== 0) {
+          // convert negative balance to positive and vice versa
+          equity.push({
+            ...item,
+            balance: -item.balance,
+          });
+        }
+      });
+      //some up all asset, liability and equity balance
+      const totalAsset = assets.reduce((acc, asset) => {
+        return acc + asset.balance;
+      }, 0);
+      const totalLiability = liabilities.reduce((acc, liability) => {
+        return acc + liability.balance;
+      }, 0);
+      const totalEquity = equity.reduce((acc, equity) => {
+        return acc + equity.balance;
+      }, 0);
 
-    // check if total asset is equal to total liability and equity
-    let match = true;
-    if (-totalAsset === totalLiability + totalEquity) {
-      match = true;
-    } else {
-      match = false;
+      // check if total asset is equal to total liability and equity
+      let match = totalAsset === totalLiability + totalEquity;
+      
+      res.json({
+        match,
+        totalAsset,
+        totalLiability,
+        totalEquity,
+        assets,
+        liabilities,
+        equity,
+      });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+      console.log(error.message);
     }
-    res.json({
-      match,
-      totalAsset,
-      totalLiability,
-      totalEquity,
-      assets,
-      liabilities,
-      equity,
-    });
   } else if (req.query.query === "is") {
-    const allAccount = await prisma.account.findMany({
-      orderBy: [
-        {
-          id: "asc",
-        },
-      ],
-      include: {
-        subAccount: {
-          include: {
-            debitTransactions: {
-              where: {
-                status: true,
+    try {
+      const allAccount = await prisma.account.findMany({
+        orderBy: [
+          {
+            id: "asc",
+          },
+        ],
+        include: {
+          subAccount: {
+            include: {
+              debitTransactions: {
+                where: {
+                  status: true,
+                },
               },
-            },
-            creditTransactions: {
-              where: {
-                status: true,
+              creditTransactions: {
+                where: {
+                  status: true,
+                },
               },
             },
           },
         },
-      },
-    });
-    // some up all debit and credit amount from each subAccount and add it to every subAccount object
-    let tb = {};
-    const accountInfo = allAccount.map((account) => {
-      return account.subAccount.map((subAccount) => {
-        const totalDebit = subAccount.debitTransactions.reduce((acc, debit) => {
-          return acc + debit.amount;
-        }, 0);
-        const totalCredit = subAccount.creditTransactions.reduce((acc, credit) => {
-          return acc + credit.amount;
-        }, 0);
-        return (tb = {
-          id: subAccount.id,
-          account: account.name,
-          subAccount: subAccount.name,
-          totalDebit,
-          totalCredit,
-          balance: totalDebit - totalCredit,
+      });
+      // some up all debit and credit amount from each subAccount and add it to every subAccount object
+      let tb = {};
+      const accountInfo = allAccount.map((account) => {
+        return account.subAccount.map((subAccount) => {
+          const totalDebit = subAccount.debitTransactions.reduce((acc, debit) => {
+            return acc + debit.amount;
+          }, 0);
+          const totalCredit = subAccount.creditTransactions.reduce((acc, credit) => {
+            return acc + credit.amount;
+          }, 0);
+          return (tb = {
+            id: subAccount.id,
+            account: account.name,
+            subAccount: subAccount.name,
+            totalDebit,
+            totalCredit,
+            balance: totalDebit - totalCredit,
+          });
         });
       });
-    });
-    // transform accountInfo into an single array
-    const incomeStatement = accountInfo.flat();
-    let revenue = [];
-    let expense = [];
-    incomeStatement.forEach((item) => {
-      if (item.account === "Revenue" && item.balance !== 0) {
-        // convert negative balance to positive and vice versa
-        revenue.push({
-          ...item,
-          balance: -item.balance,
-        });
-      }
-      if (item.account === "Expense" && item.balance !== 0) {
-        // convert negative balance to positive and vice versa
-        expense.push({
-          ...item,
-          balance: -item.balance,
-        });
-      }
-    });
+      // transform accountInfo into an single array
+      const incomeStatement = accountInfo.flat();
+      let revenue = [];
+      let expense = [];
+      incomeStatement.forEach((item) => {
+        if (item.account === "Revenue" && item.balance !== 0) {
+          // convert negative balance to positive and vice versa
+          revenue.push({
+            ...item,
+            balance: -item.balance,
+          });
+        }
+        if (item.account === "Expense" && item.balance !== 0) {
+          // convert negative balance to positive and vice versa
+          expense.push({
+            ...item,
+            balance: -item.balance,
+          });
+        }
+      });
 
-    //some up all revenue and expense balance
-    const totalRevenue = revenue.reduce((acc, revenue) => {
-      return acc + revenue.balance;
-    }, 0);
-    const totalExpense = expense.reduce((acc, expense) => {
-      return acc + expense.balance;
-    }, 0);
+      //some up all revenue and expense balance
+      const totalRevenue = revenue.reduce((acc, revenue) => {
+        return acc + revenue.balance;
+      }, 0);
+      const totalExpense = expense.reduce((acc, expense) => {
+        return acc + expense.balance;
+      }, 0);
 
-    res.json({
-      totalRevenue,
-      totalExpense,
-      profit: totalRevenue + totalExpense,
-      revenue,
-      expense,
-    });
+      res.json({
+        totalRevenue,
+        totalExpense,
+        profit: totalRevenue - totalExpense,
+        revenue,
+        expense,
+      });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+      console.log(error.message);
+    }
   } else if (req.query.query == "sa") {
     // subAccount
     try {

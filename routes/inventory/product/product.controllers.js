@@ -2,6 +2,7 @@ const { getPagination } = require("../../../utils/query");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 const cacheService = require("../../../utils/cache");
+const { createTransactionWithSubAccounts } = require("../../../utils/transactionHelper");
 require("dotenv").config();
 
 const PORT = process.env.PORT || 2029;
@@ -131,14 +132,12 @@ console.log("Credit subAccount:", subAcc);
       const purchasePrice = req.body.purchase_price && !isNaN(parseFloat(req.body.purchase_price)) ? parseFloat(req.body.purchase_price) : 0;
       
       if (quantity > 0 && purchasePrice > 0) {
-        await prisma.transaction.create({
-          data: {
-            date: new Date(),
-            debit_id: 3,
-            credit_id: 6,
-            amount: purchasePrice * quantity,
-            particulars: `Initial stock of product #${createdProduct.id}`,
-          },
+        await createTransactionWithSubAccounts({
+          date: new Date(),
+          sub_debit_id: 3, // Inventory
+          sub_credit_id: 6, // Capital
+          amount: purchasePrice * quantity,
+          particulars: `Initial stock of product #${createdProduct.id}`,
         });
       }
 

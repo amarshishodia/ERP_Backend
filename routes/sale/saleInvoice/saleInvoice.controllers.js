@@ -1,6 +1,7 @@
 const { getPagination } = require("../../../utils/query");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
+const { createTransactionWithSubAccounts } = require("../../../utils/transactionHelper");
 
 const createSingleSaleInvoice = async (req, res) => {
   try {
@@ -32,12 +33,99 @@ const createSingleSaleInvoice = async (req, res) => {
     return res.status(400).json({ message: 'Invoice number is already taken.' });
   }
 
-    // calculate total sale price
+    // Step 1: Handle new products (products with ISBN but no product_id)
+    const productIdMap = new Map(); // Map ISBN to product_id
+    const newProducts = req.body.saleInvoiceProduct.filter(item => item.isbn && !item.product_id);
+    
+    // Create new products if any
+    for (const item of newProducts) {
+      if (!item.product_data || !item.product_data.isbn) continue;
+      
+      const productData = item.product_data;
+      
+      // Check if product already exists by ISBN (in case of race condition)
+      let existingProduct = await prisma.product.findFirst({
+        where: { isbn: productData.isbn }
+      });
+      
+      if (existingProduct) {
+        productIdMap.set(productData.isbn, existingProduct.id);
+        continue;
+      }
+      
+      // Handle publisher - create if doesn't exist
+      let publisherId = productData.book_publisher_id;
+      if (!publisherId && productData.publisher_name) {
+        let publisher = await prisma.book_publisher.findFirst({
+          where: { name: productData.publisher_name }
+        });
+        
+        if (!publisher) {
+          publisher = await prisma.book_publisher.create({
+            data: { name: productData.publisher_name }
+          });
+        }
+        publisherId = publisher.id;
+      }
+      
+      // Prepare product data
+      const newProductData = {
+        isbn: productData.isbn,
+        name: productData.name || "",
+        author: productData.author || null,
+        sale_price: parseFloat(productData.sale_price) || 0,
+        purchase_price: parseFloat(productData.purchase_price) || 0,
+        quantity: parseInt(productData.quantity) || 0,
+        unit_measurement: parseFloat(productData.unit_measurement) || 0,
+        unit_type: productData.unit_type || "",
+      };
+      
+      // Connect currency (required field)
+      if (productData.product_currency_id) {
+        newProductData.product_currency = {
+          connect: { id: Number(productData.product_currency_id) }
+        };
+      }
+      
+      // Connect publisher if available
+      if (publisherId) {
+        newProductData.book_publisher = {
+          connect: { id: Number(publisherId) }
+        };
+      }
+      
+      // Connect category if available
+      if (productData.product_category_id) {
+        newProductData.product_category = {
+          connect: { id: Number(productData.product_category_id) }
+        };
+      }
+      
+      // Create the new product
+      const createdProduct = await prisma.product.create({
+        data: newProductData
+      });
+      
+      productIdMap.set(productData.isbn, createdProduct.id);
+    }
+    
+    // Step 2: Map all products to their IDs
+    const processedProducts = req.body.saleInvoiceProduct.map((item) => {
+      if (item.product_id) {
+        return { ...item, final_product_id: Number(item.product_id) };
+      } else if (item.isbn && productIdMap.has(item.isbn)) {
+        return { ...item, final_product_id: productIdMap.get(item.isbn) };
+      } else {
+        throw new Error(`Product not found for ISBN: ${item.isbn}`);
+      }
+    });
+
+    // Step 3: Calculate totals
     let totalSalePrice = 0;
     let totalProductDiscount = 0;
     let totalProductQty = 0;
 
-    req.body.saleInvoiceProduct.forEach((item) => {
+    processedProducts.forEach((item) => {
       totalSalePrice +=
         parseFloat(item.product_sale_price) *
         parseFloat(item.product_quantity) *
@@ -47,10 +135,10 @@ const createSingleSaleInvoice = async (req, res) => {
         (parseFloat(item.product_sale_price) *
           parseFloat(item.product_quantity) *
           parseFloat(item.product_sale_conversion) *
-          parseFloat(item.product_sale_discount)) /
+          parseFloat(item.product_sale_discount || 0)) /
         100;
 
-      totalProductQty += parseInt(item.product_quantity); // to sum total product quantity
+      totalProductQty += parseInt(item.product_quantity);
     });
 
     // Calculate final totals with round off
@@ -61,22 +149,26 @@ const createSingleSaleInvoice = async (req, res) => {
     const finalTotal = subtotalAfterProductDiscounts - additionalDiscount + roundOffAmount;
     const paidAmount = parseFloat(req.body.paid_amount) || 0;
     const dueAmount = finalTotal - paidAmount;
-    // get all product asynchronously
+    
+    // Step 4: Get all products for purchase price calculation
     const allProduct = await Promise.all(
-      req.body.saleInvoiceProduct.map(async (item) => {
+      processedProducts.map(async (item) => {
         const product = await prisma.product.findUnique({
           where: {
-            id: item.product_id,
+            id: item.final_product_id,
           },
         });
         return product;
       })
     );
-    // iterate over all product and calculate total purchase price
-    totalPurchasePrice = 0;
-    req.body.saleInvoiceProduct.forEach((item, index) => {
+    
+    // Calculate total purchase price
+    let totalPurchasePrice = 0;
+    processedProducts.forEach((item, index) => {
+      if (allProduct[index] && allProduct[index].purchase_price) {
       totalPurchasePrice +=
-        allProduct[index].purchase_price * item.product_quantity;
+          (allProduct[index].purchase_price || 0) * item.product_quantity;
+      }
     });
     // convert all incoming date to a specific format.
     const date = new Date(req.body.date).toISOString().split("T")[0];
@@ -113,17 +205,17 @@ const createSingleSaleInvoice = async (req, res) => {
         // invoice_order_date: new Date(req.body.orderDate),
         invoice_order_number: req.body.orderNumber,
         prefix: req.body.prefix,
-        // map and save all products from request body array of products
+        // map and save all products from processed products array
         saleInvoiceProduct: {
-          create: req.body.saleInvoiceProduct.map((product) => ({
+          create: processedProducts.map((product) => ({
             product: {
               connect: {
-                id: Number(product.product_id),
+                id: product.final_product_id,
               },
             },
             product_quantity: Number(product.product_quantity),
             product_sale_price: parseFloat(product.product_sale_price),
-            product_sale_discount: parseFloat(product.product_sale_discount),
+            product_sale_discount: parseFloat(product.product_sale_discount || 0),
             product_sale_currency: product.product_sale_currency,
             product_sale_conversion: parseFloat(
               product.product_sale_conversion
@@ -134,49 +226,43 @@ const createSingleSaleInvoice = async (req, res) => {
     });
     // new transactions will be created as journal entry for paid amount
     if (paidAmount > 0) {
-      await prisma.transaction.create({
-        data: {
-          date: new Date(date),
-          debit_id: 1,
-          credit_id: 8,
-          amount: paidAmount,
-          particulars: `Cash receive on Sale Invoice #${createdInvoice.id}`,
-          type: "sale",
-          related_id: createdInvoice.id,
-        },
+      await createTransactionWithSubAccounts({
+        date: new Date(date),
+        sub_debit_id: 1, // Cash
+        sub_credit_id: 8, // Sales
+        amount: paidAmount,
+        particulars: `Cash receive on Sale Invoice #${createdInvoice.id}`,
+        type: "sale",
+        related_id: createdInvoice.id,
       });
     }
     // if sale on due another transactions will be created as journal entry
     if (dueAmount > 0) {
-      await prisma.transaction.create({
-        data: {
-          date: new Date(date),
-          debit_id: 4,
-          credit_id: 8,
-          amount: dueAmount,
-          particulars: `Due on Sale Invoice #${createdInvoice.id}`,
-          type: "sale",
-          related_id: createdInvoice.id,
-        },
+      await createTransactionWithSubAccounts({
+        date: new Date(date),
+        sub_debit_id: 4, // Accounts Receivable
+        sub_credit_id: 8, // Sales
+        amount: dueAmount,
+        particulars: `Due on Sale Invoice #${createdInvoice.id}`,
+        type: "sale",
+        related_id: createdInvoice.id,
       });
     }
     // cost of sales will be created as journal entry
-    await prisma.transaction.create({
-      data: {
-        date: new Date(date),
-        debit_id: 9,
-        credit_id: 3,
-        amount: totalPurchasePrice,
-        particulars: `Cost of sales on Sale Invoice #${createdInvoice.id}`,
-        type: "sale",
-        related_id: createdInvoice.id,
-      },
+    await createTransactionWithSubAccounts({
+      date: new Date(date),
+      sub_debit_id: 9, // Cost of Sales
+      sub_credit_id: 3, // Inventory
+      amount: totalPurchasePrice,
+      particulars: `Cost of sales on Sale Invoice #${createdInvoice.id}`,
+      type: "sale",
+      related_id: createdInvoice.id,
     });
     // iterate through all products of this sale invoice and decrease product quantity
-    req.body.saleInvoiceProduct.forEach(async (item) => {
+    processedProducts.forEach(async (item) => {
       await prisma.product.update({
         where: {
-          id: Number(item.product_id),
+          id: item.final_product_id,
         },
         data: {
           quantity: {

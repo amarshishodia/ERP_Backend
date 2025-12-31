@@ -220,23 +220,25 @@ model saleInvoiceProduct {
 }
 
 model transaction {
-  id            Int         @id @default(autoincrement())
-  date          DateTime
-  debit_id      Int
-  credit_id     Int
-  sub_debit_id  Int?
-  sub_credit_id Int?
-  particulars   String
-  amount        Float
-  type          String?
-  related_id    Int?
-  status        Boolean     @default(true)
-  created_at    DateTime    @default(now())
-  updated_at    DateTime    @updatedAt
-  debit         account     @relation("TransactionDebit", fields: [debit_id], references: [id])
-  credit        account     @relation("TransactionCredit", fields: [credit_id], references: [id])
-  subDebit      subAccount? @relation("TransactionSubDebit", fields: [sub_debit_id], references: [id])
-  subCredit     subAccount? @relation("TransactionSubCredit", fields: [sub_credit_id], references: [id])
+  id              Int         @id @default(autoincrement())
+  date            DateTime
+  debit_id        Int
+  credit_id       Int
+  sub_debit_id    Int?
+  sub_credit_id   Int?
+  particulars     String
+  amount          Float
+  type            String?
+  related_id      Int?
+  payment_method  String?
+  reference_number String?
+  status          Boolean     @default(true)
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+  debit           account     @relation("TransactionDebit", fields: [debit_id], references: [id])
+  credit          account     @relation("TransactionCredit", fields: [credit_id], references: [id])
+  subDebit        subAccount? @relation("TransactionSubDebit", fields: [sub_debit_id], references: [id])
+  subCredit       subAccount? @relation("TransactionSubCredit", fields: [sub_credit_id], references: [id])
 
   @@index([credit_id], map: "transaction_credit_id_fkey")
   @@index([debit_id], map: "transaction_debit_id_fkey")

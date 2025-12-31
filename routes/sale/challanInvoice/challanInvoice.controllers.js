@@ -23,12 +23,99 @@ const createSingleChallan = async (req, res) => {
       return res.status(400).json({ message: 'Invoice number is already taken.' });
     }
 
-    // Calculate totals
+    // Step 1: Handle new products (products with ISBN but no product_id)
+    const productIdMap = new Map(); // Map ISBN to product_id
+    const newProducts = req.body.saleInvoiceProduct.filter(item => item.isbn && !item.product_id);
+    
+    // Create new products if any
+    for (const item of newProducts) {
+      if (!item.product_data || !item.product_data.isbn) continue;
+      
+      const productData = item.product_data;
+      
+      // Check if product already exists by ISBN (in case of race condition)
+      let existingProduct = await prisma.product.findFirst({
+        where: { isbn: productData.isbn }
+      });
+      
+      if (existingProduct) {
+        productIdMap.set(productData.isbn, existingProduct.id);
+        continue;
+      }
+      
+      // Handle publisher - create if doesn't exist
+      let publisherId = productData.book_publisher_id;
+      if (!publisherId && productData.publisher_name) {
+        let publisher = await prisma.book_publisher.findFirst({
+          where: { name: productData.publisher_name }
+        });
+        
+        if (!publisher) {
+          publisher = await prisma.book_publisher.create({
+            data: { name: productData.publisher_name }
+          });
+        }
+        publisherId = publisher.id;
+      }
+      
+      // Prepare product data
+      const newProductData = {
+        isbn: productData.isbn,
+        name: productData.name || "",
+        author: productData.author || null,
+        sale_price: parseFloat(productData.sale_price) || 0,
+        purchase_price: parseFloat(productData.purchase_price) || 0,
+        quantity: parseInt(productData.quantity) || 0,
+        unit_measurement: parseFloat(productData.unit_measurement) || 0,
+        unit_type: productData.unit_type || "",
+      };
+      
+      // Connect currency (required field)
+      if (productData.product_currency_id) {
+        newProductData.product_currency = {
+          connect: { id: Number(productData.product_currency_id) }
+        };
+      }
+      
+      // Connect publisher if available
+      if (publisherId) {
+        newProductData.book_publisher = {
+          connect: { id: Number(publisherId) }
+        };
+      }
+      
+      // Connect category if available
+      if (productData.product_category_id) {
+        newProductData.product_category = {
+          connect: { id: Number(productData.product_category_id) }
+        };
+      }
+      
+      // Create the new product
+      const createdProduct = await prisma.product.create({
+        data: newProductData
+      });
+      
+      productIdMap.set(productData.isbn, createdProduct.id);
+    }
+    
+    // Step 2: Map all products to their IDs
+    const processedProducts = req.body.saleInvoiceProduct.map((item) => {
+      if (item.product_id) {
+        return { ...item, final_product_id: Number(item.product_id) };
+      } else if (item.isbn && productIdMap.has(item.isbn)) {
+        return { ...item, final_product_id: productIdMap.get(item.isbn) };
+      } else {
+        throw new Error(`Product not found for ISBN: ${item.isbn || 'N/A'}. Please ensure all products have a valid product_id or ISBN.`);
+      }
+    });
+
+    // Step 3: Calculate totals
     let totalSalePrice = 0;
     let totalProductDiscount = 0;
     let totalProductQty = 0;
 
-    req.body.saleInvoiceProduct.forEach((item) => {
+    processedProducts.forEach((item) => {
       totalSalePrice +=
         parseFloat(item.product_sale_price) *
         parseFloat(item.product_quantity) *
@@ -38,7 +125,7 @@ const createSingleChallan = async (req, res) => {
         (parseFloat(item.product_sale_price) *
           parseFloat(item.product_quantity) *
           parseFloat(item.product_sale_conversion) *
-          parseFloat(item.product_sale_discount)) /
+          parseFloat(item.product_sale_discount || 0)) /
         100;
 
       totalProductQty += parseInt(item.product_quantity);
@@ -79,15 +166,15 @@ const createSingleChallan = async (req, res) => {
         invoice_order_number: req.body.orderNumber,
         prefix: req.body.prefix,
         challanInvoiceProduct: {
-          create: req.body.saleInvoiceProduct.map((product) => ({
+          create: processedProducts.map((product) => ({
             product: {
               connect: {
-                id: Number(product.product_id),
+                id: product.final_product_id,
               },
             },
             product_quantity: Number(product.product_quantity),
             product_sale_price: parseFloat(product.product_sale_price),
-            product_sale_discount: parseFloat(product.product_sale_discount),
+            product_sale_discount: parseFloat(product.product_sale_discount || 0),
             product_sale_currency: product.product_sale_currency,
             product_sale_conversion: parseFloat(
               product.product_sale_conversion
@@ -98,18 +185,20 @@ const createSingleChallan = async (req, res) => {
     });
 
     // Decrease product quantity for challan (but NO financial transactions)
-    req.body.saleInvoiceProduct.forEach(async (item) => {
-      await prisma.product.update({
-        where: {
-          id: Number(item.product_id),
-        },
-        data: {
-          quantity: {
-            decrement: Number(item.product_quantity),
+    await Promise.all(
+      processedProducts.map((item) =>
+        prisma.product.update({
+          where: {
+            id: item.final_product_id,
           },
-        },
-      });
-    });
+          data: {
+            quantity: {
+              decrement: Number(item.product_quantity),
+            },
+          },
+        })
+      )
+    );
 
     res.json({
       createdChallan,
@@ -424,6 +513,85 @@ const updateSingleChallan = async (req, res) => {
     const roundOffAmount = parseFloat(req.body.round_off_amount) || 0;
     const roundOffEnabled = req.body.round_off_enabled || false;
 
+    // Step 1: Handle new products before update (similar to create)
+    const updateProductIdMap = new Map();
+    const updateNewProducts = req.body.saleInvoiceProduct.filter(item => item.isbn && !item.product_id);
+    
+    for (const item of updateNewProducts) {
+      if (!item.product_data || !item.product_data.isbn) continue;
+      
+      const productData = item.product_data;
+      
+      let existingProduct = await prisma.product.findFirst({
+        where: { isbn: productData.isbn }
+      });
+      
+      if (existingProduct) {
+        updateProductIdMap.set(productData.isbn, existingProduct.id);
+        continue;
+      }
+      
+      let publisherId = productData.book_publisher_id;
+      if (!publisherId && productData.publisher_name) {
+        let publisher = await prisma.book_publisher.findFirst({
+          where: { name: productData.publisher_name }
+        });
+        
+        if (!publisher) {
+          publisher = await prisma.book_publisher.create({
+            data: { name: productData.publisher_name }
+          });
+        }
+        publisherId = publisher.id;
+      }
+      
+      const newProductData = {
+        isbn: productData.isbn,
+        name: productData.name || "",
+        author: productData.author || null,
+        sale_price: parseFloat(productData.sale_price) || 0,
+        purchase_price: parseFloat(productData.purchase_price) || 0,
+        quantity: parseInt(productData.quantity) || 0,
+        unit_measurement: parseFloat(productData.unit_measurement) || 0,
+        unit_type: productData.unit_type || "",
+      };
+      
+      if (productData.product_currency_id) {
+        newProductData.product_currency = {
+          connect: { id: Number(productData.product_currency_id) }
+        };
+      }
+      
+      if (publisherId) {
+        newProductData.book_publisher = {
+          connect: { id: Number(publisherId) }
+        };
+      }
+      
+      if (productData.product_category_id) {
+        newProductData.product_category = {
+          connect: { id: Number(productData.product_category_id) }
+        };
+      }
+      
+      const createdProduct = await prisma.product.create({
+        data: newProductData
+      });
+      
+      updateProductIdMap.set(productData.isbn, createdProduct.id);
+    }
+    
+    // Step 2: Map all products to their IDs
+    const updateProcessedProducts = req.body.saleInvoiceProduct.map((item) => {
+      if (item.product_id) {
+        return { ...item, final_product_id: Number(item.product_id) };
+      } else if (item.isbn && updateProductIdMap.has(item.isbn)) {
+        return { ...item, final_product_id: updateProductIdMap.get(item.isbn) };
+      } else {
+        throw new Error(`Product not found for ISBN: ${item.isbn || 'N/A'}. Please ensure all products have a valid product_id or ISBN.`);
+      }
+    });
+
     // Get previous challan products to restore stock
     const previousChallan = await prisma.challanInvoice.findUnique({
       where: { id: Number(req.params.id) },
@@ -477,15 +645,15 @@ const updateSingleChallan = async (req, res) => {
         // Update the related products
         challanInvoiceProduct: {
           deleteMany: {},
-          create: req.body.saleInvoiceProduct.map((product) => ({
+          create: updateProcessedProducts.map((product) => ({
             product: {
               connect: {
-                id: Number(product.product_id),
+                id: product.final_product_id,
               },
             },
             product_quantity: Number(product.product_quantity),
             product_sale_price: parseFloat(product.product_sale_price),
-            product_sale_discount: parseFloat(product.product_sale_discount),
+            product_sale_discount: parseFloat(product.product_sale_discount || 0),
             product_sale_currency: product.product_sale_currency,
             product_sale_conversion: parseFloat(product.product_sale_conversion),
           })),
@@ -504,10 +672,10 @@ const updateSingleChallan = async (req, res) => {
 
     // Decrement stock for new products (challan affects stock)
     await Promise.all(
-      req.body.saleInvoiceProduct.map((item) =>
+      updateProcessedProducts.map((item) =>
         prisma.product.update({
           where: {
-            id: Number(item.product_id),
+            id: item.final_product_id,
           },
           data: {
             quantity: {
