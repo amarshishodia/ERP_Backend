@@ -5,6 +5,9 @@ const {
   getSingleProductCurrency,
   updateSingleProductCurrency,
   deleteSingleProductCurrency,
+  getCurrencyRates,
+  addCurrencyRate,
+  deleteCurrencyRate,
 } = require("./productCurrency.controllers");
 const authorize = require("../../../utils/authorize"); // authentication middleware
 
@@ -34,6 +37,23 @@ productCurrencyRoutes.delete(
   "/:id",
   authorize("deleteProductCurrency"),
   deleteSingleProductCurrency
+);
+
+// Currency Rate Routes
+productCurrencyRoutes.get(
+  "/:id/rates",
+  authorize("viewProductCurrency"),
+  getCurrencyRates
+);
+productCurrencyRoutes.post(
+  "/:id/rates",
+  authorize("updateProductCurrency"),
+  addCurrencyRate
+);
+productCurrencyRoutes.delete(
+  "/:id/rates/:rateId",
+  authorize("deleteProductCurrency"),
+  deleteCurrencyRate
 );
 
 module.exports = productCurrencyRoutes;

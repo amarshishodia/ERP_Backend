@@ -35,7 +35,7 @@ const createSingleProductCurrency = async (req, res) => {
 			res.status(400).json(error.message);
 			console.log(error.message);
 		}
-	} else {
+		} else {
 		try {
 			// create single product_currency from an object
 			const createdProductCurrency = await prisma.product_currency.create({
@@ -43,6 +43,7 @@ const createSingleProductCurrency = async (req, res) => {
 					name: req.body.name,
 					symbol: req.body.symbol,
 					conversion: parseFloat(req.body.conversion),
+					effective_from_date: req.body.effective_from_date ? new Date(req.body.effective_from_date) : null,
 				},
 			});
 			res.json(createdProductCurrency);
@@ -63,9 +64,26 @@ const getAllProductCurrency = async (req, res) => {
 				},
 				include: {
 					product: true,
+					currency_rates: {
+						orderBy: {
+							effective_from_date: 'desc',
+						},
+						take: 1, // Get latest rate
+					},
 				},
 			});
-			res.json(getAllProductCurrency);
+			// Update conversion field with latest rate if available
+			const currenciesWithLatestRate = getAllProductCurrency.map(currency => {
+				if (currency.currency_rates && currency.currency_rates.length > 0) {
+					return {
+						...currency,
+						conversion: currency.currency_rates[0].conversion,
+						effective_from_date: currency.currency_rates[0].effective_from_date,
+					};
+				}
+				return currency;
+			});
+			res.json(currenciesWithLatestRate);
 		} catch (error) {
 			res.status(400).json(error.message);
 			console.log(error.message);
@@ -80,11 +98,28 @@ const getAllProductCurrency = async (req, res) => {
 				},
 				include: {
 					product: true,
+					currency_rates: {
+						orderBy: {
+							effective_from_date: 'desc',
+						},
+						take: 1, // Get latest rate
+					},
 				},
 				skip: parseInt(skip),
 				take: parseInt(limit),
 			});
-			res.json(getAllProductCurrency);
+			// Update conversion field with latest rate if available
+			const currenciesWithLatestRate = getAllProductCurrency.map(currency => {
+				if (currency.currency_rates && currency.currency_rates.length > 0) {
+					return {
+						...currency,
+						conversion: currency.currency_rates[0].conversion,
+						effective_from_date: currency.currency_rates[0].effective_from_date,
+					};
+				}
+				return currency;
+			});
+			res.json(currenciesWithLatestRate);
 		} catch (error) {
 			res.status(400).json(error.message);
 			console.log(error.message);
@@ -117,13 +152,26 @@ const getSingleProductCurrency = async (req, res) => {
 
 const updateSingleProductCurrency = async (req, res) => {
 	try {
+		const updateData = {
+			name: req.body.name,
+		};
+		
+		// Add optional fields if provided
+		if (req.body.symbol !== undefined) {
+			updateData.symbol = req.body.symbol;
+		}
+		if (req.body.conversion !== undefined) {
+			updateData.conversion = parseFloat(req.body.conversion);
+		}
+		if (req.body.effective_from_date !== undefined) {
+			updateData.effective_from_date = req.body.effective_from_date ? new Date(req.body.effective_from_date) : null;
+		}
+		
 		const updatedProductCurrency = await prisma.product_currency.update({
 			where: {
 				id: parseInt(req.params.id),
 			},
-			data: {
-				name: req.body.name,
-			},
+			data: updateData,
 		});
 		res.json(updatedProductCurrency);
 	} catch (error) {
@@ -146,11 +194,94 @@ const deleteSingleProductCurrency = async (req, res) => {
 	}
 };
 
+// Currency Rate Controllers
+const getCurrencyRates = async (req, res) => {
+	try {
+		const currencyId = parseInt(req.params.id);
+		const rates = await prisma.product_currency_rate.findMany({
+			where: {
+				product_currency_id: currencyId,
+			},
+			orderBy: {
+				effective_from_date: 'desc',
+			},
+		});
+		res.json(rates);
+	} catch (error) {
+		res.status(400).json(error.message);
+		console.log(error.message);
+	}
+};
+
+const addCurrencyRate = async (req, res) => {
+	try {
+		const currencyId = parseInt(req.params.id);
+		const { conversion, effective_from_date } = req.body;
+		
+		// Create new rate
+		const newRate = await prisma.product_currency_rate.create({
+			data: {
+				product_currency_id: currencyId,
+				conversion: parseFloat(conversion),
+				effective_from_date: new Date(effective_from_date),
+			},
+		});
+		
+		// Update the main currency conversion field to the latest rate
+		await prisma.product_currency.update({
+			where: { id: currencyId },
+			data: {
+				conversion: parseFloat(conversion),
+				effective_from_date: new Date(effective_from_date),
+			},
+		});
+		
+		res.json(newRate);
+	} catch (error) {
+		res.status(400).json(error.message);
+		console.log(error.message);
+	}
+};
+
+const deleteCurrencyRate = async (req, res) => {
+	try {
+		const rateId = parseInt(req.params.rateId);
+		const deletedRate = await prisma.product_currency_rate.delete({
+			where: { id: rateId },
+		});
+		
+		// Update main currency conversion to latest rate if available
+		const currencyId = deletedRate.product_currency_id;
+		const latestRate = await prisma.product_currency_rate.findFirst({
+			where: { product_currency_id: currencyId },
+			orderBy: { effective_from_date: 'desc' },
+		});
+		
+		if (latestRate) {
+			await prisma.product_currency.update({
+				where: { id: currencyId },
+				data: {
+					conversion: latestRate.conversion,
+					effective_from_date: latestRate.effective_from_date,
+				},
+			});
+		}
+		
+		res.json(deletedRate);
+	} catch (error) {
+		res.status(400).json(error.message);
+		console.log(error.message);
+	}
+};
+
 module.exports = {
 	createSingleProductCurrency,
 	getAllProductCurrency,
 	getSingleProductCurrency,
 	updateSingleProductCurrency,
 	deleteSingleProductCurrency,
+	getCurrencyRates,
+	addCurrencyRate,
+	deleteCurrencyRate,
 };
 

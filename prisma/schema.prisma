@@ -100,13 +100,28 @@ model book_publisher {
 }
 
 model product_currency {
-  id         Int       @id @default(autoincrement())
-  name       String    @unique
-  symbol     String    @unique
-  conversion Float
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  product    product[]
+  id                Int                      @id @default(autoincrement())
+  name              String                   @unique
+  symbol            String                   @unique
+  conversion        Float                    // Keep for backward compatibility, will use latest rate
+  effective_from_date DateTime?              // Keep for backward compatibility
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  product           product[]
+  currency_rates   product_currency_rate[]
+}
+
+model product_currency_rate {
+  id                Int              @id @default(autoincrement())
+  product_currency_id Int
+  conversion        Float
+  effective_from_date DateTime
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  product_currency  product_currency @relation(fields: [product_currency_id], references: [id], onDelete: Cascade)
+
+  @@index([product_currency_id])
+  @@index([effective_from_date])
 }
 
 model supplier {
