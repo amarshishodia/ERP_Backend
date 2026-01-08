@@ -1,9 +1,16 @@
 const { getPagination } = require("../../utils/query");
+const { getCompanyId } = require("../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const getDashboardData = async (req, res) => {
 	try {
+		// Get company_id from logged-in user
+		const companyId = await getCompanyId(req.auth.sub);
+		if (!companyId) {
+			return res.status(400).json({ error: "User company_id not found" });
+		}
+
 		//==================================saleProfitCount===============================================
 		// get all sale invoice by group
 		const allSaleInvoice = await prisma.saleInvoice.groupBy({
@@ -16,6 +23,7 @@ const getDashboardData = async (req, res) => {
 					gte: new Date(req.query.startdate),
 					lte: new Date(req.query.enddate),
 				},
+				company_id: companyId,
 			},
 			_sum: {
 				total_amount: true,
@@ -56,6 +64,9 @@ const getDashboardData = async (req, res) => {
 		//==================================PurchaseVSSale===============================================
 		// get all customer due amount
 		const salesInfo = await prisma.saleInvoice.aggregate({
+			where: {
+				company_id: companyId,
+			},
 			_count: {
 				id: true,
 			},
@@ -64,6 +75,9 @@ const getDashboardData = async (req, res) => {
 			},
 		});
 		const purchasesInfo = await prisma.purchaseInvoice.aggregate({
+			where: {
+				company_id: companyId,
+			},
 			_count: {
 				id: true,
 			},
@@ -95,14 +109,21 @@ const getDashboardData = async (req, res) => {
 					gte: new Date(req.query.startdate),
 					lte: new Date(req.query.enddate),
 				},
+				company_id: companyId,
 			},
 		});
 		// format response data for data visualization chart in antdantd
 		const formattedData6 = await Promise.all(
 			allSaleInvoiceByGroup.map(async (item) => {
-				const customer = await prisma.customer.findUnique({
-					where: { id: item.customer_id },
+				const customer = await prisma.customer.findFirst({
+					where: { 
+						id: item.customer_id,
+						company_id: companyId,
+					},
 				});
+				if (!customer) {
+					return null;
+				}
 				const formattedData = {
 					label: customer.name,
 					type: "Sales",
@@ -113,9 +134,15 @@ const getDashboardData = async (req, res) => {
 		);
 		const formattedData7 = await Promise.all(
 			allSaleInvoiceByGroup.map(async (item) => {
-				const customer = await prisma.customer.findUnique({
-					where: { id: item.customer_id },
+				const customer = await prisma.customer.findFirst({
+					where: { 
+						id: item.customer_id,
+						company_id: companyId,
+					},
 				});
+				if (!customer) {
+					return null;
+				}
 				return {
 					label: customer.name,
 					type: "Profit",
@@ -123,14 +150,21 @@ const getDashboardData = async (req, res) => {
 				};
 			})
 		);
-		// concat formatted data
-		const customerSaleProfit = [...formattedData6, ...formattedData7].sort(
-			(a, b) => {
-				a.value - b.value;
-			}
-		);
+		// concat formatted data and filter out null values
+		const customerSaleProfit = [...formattedData6, ...formattedData7]
+			.filter(item => item !== null)
+			.sort((a, b) => {
+				return a.value - b.value;
+			});
 		//==================================cardInfo===============================================
 		const purchaseInfo = await prisma.purchaseInvoice.aggregate({
+			where: {
+				date: {
+					gte: new Date(req.query.startdate),
+					lte: new Date(req.query.enddate),
+				},
+				company_id: companyId,
+			},
 			_count: {
 				id: true,
 			},
@@ -139,14 +173,15 @@ const getDashboardData = async (req, res) => {
 				due_amount: true,
 				paid_amount: true,
 			},
+		});
+		const saleInfo = await prisma.saleInvoice.aggregate({
 			where: {
 				date: {
 					gte: new Date(req.query.startdate),
 					lte: new Date(req.query.enddate),
 				},
+				company_id: companyId,
 			},
-		});
-		const saleInfo = await prisma.saleInvoice.aggregate({
 			_count: {
 				id: true,
 			},
@@ -155,12 +190,6 @@ const getDashboardData = async (req, res) => {
 				due_amount: true,
 				paid_amount: true,
 				profit: true,
-			},
-			where: {
-				date: {
-					gte: new Date(req.query.startdate),
-					lte: new Date(req.query.enddate),
-				},
 			},
 		});
 		// concat 2 object
