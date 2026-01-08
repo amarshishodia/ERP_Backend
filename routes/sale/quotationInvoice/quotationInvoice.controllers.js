@@ -1,12 +1,20 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const createSingleQuotation = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     // Check if invoice number is already taken
     const existingQuotation = await prisma.quotationInvoice.findFirst({
       where: {
+        company_id: companyId,
         OR: [
           {
             prefix: req.body.prefix,
@@ -35,7 +43,7 @@ const createSingleQuotation = async (req, res) => {
       
       // Check if product already exists by ISBN (in case of race condition)
       let existingProduct = await prisma.product.findFirst({
-        where: { isbn: productData.isbn }
+        where: { isbn: productData.isbn, company_id: companyId }
       });
       
       if (existingProduct) {
@@ -47,12 +55,12 @@ const createSingleQuotation = async (req, res) => {
       let publisherId = productData.book_publisher_id;
       if (!publisherId && productData.publisher_name) {
         let publisher = await prisma.book_publisher.findFirst({
-          where: { name: productData.publisher_name }
+          where: { name: productData.publisher_name, company_id: companyId }
         });
         
         if (!publisher) {
           publisher = await prisma.book_publisher.create({
-            data: { name: productData.publisher_name }
+            data: { name: productData.publisher_name, company_id: companyId }
           });
         }
         publisherId = publisher.id;
@@ -68,6 +76,7 @@ const createSingleQuotation = async (req, res) => {
         quantity: parseInt(productData.quantity) || 0,
         unit_measurement: parseFloat(productData.unit_measurement) || 0,
         unit_type: productData.unit_type || "",
+        company_id: companyId,
       };
       
       // Connect currency (required field)
@@ -99,7 +108,24 @@ const createSingleQuotation = async (req, res) => {
       productIdMap.set(productData.isbn, createdProduct.id);
     }
     
-    // Step 2: Map all products to their IDs
+    // Step 2: Verify products with product_id belong to the company
+    const productIds = req.body.saleInvoiceProduct
+      .filter(item => item.product_id)
+      .map(item => Number(item.product_id));
+    
+    if (productIds.length > 0) {
+      const products = await prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, company_id: true },
+      });
+
+      const invalidProducts = products.filter(p => p.company_id !== companyId);
+      if (invalidProducts.length > 0) {
+        return res.status(403).json({ error: "Some products do not belong to your company" });
+      }
+    }
+
+    // Step 3: Map all products to their IDs
     const processedProducts = req.body.saleInvoiceProduct.map((item) => {
       if (item.product_id) {
         return { ...item, final_product_id: Number(item.product_id) };
@@ -110,7 +136,7 @@ const createSingleQuotation = async (req, res) => {
       }
     });
 
-    // Step 3: Calculate totals
+    // Step 4: Calculate totals
     let totalSalePrice = 0;
     let totalProductDiscount = 0;
     let totalProductQty = 0;
@@ -150,6 +176,9 @@ const createSingleQuotation = async (req, res) => {
         total_product_qty: totalProductQty,
         round_off_enabled: roundOffEnabled,
         round_off_amount: roundOffAmount,
+        company: {
+          connect: { id: companyId },
+        },
         customer: {
           connect: {
             id: Number(req.body.customer_id),
@@ -196,6 +225,12 @@ const createSingleQuotation = async (req, res) => {
 
 const getAllQuotation = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     const { skip, limit } = getPagination(req.query);
     const startdate = req.query.startdate;
     const enddate = req.query.enddate;
@@ -206,6 +241,7 @@ const getAllQuotation = async (req, res) => {
           gte: new Date(startdate),
           lte: new Date(enddate),
         },
+        company_id: companyId,
       },
       include: {
         customer: true,
@@ -233,9 +269,16 @@ const getAllQuotation = async (req, res) => {
 
 const getSingleQuotation = async (req, res) => {
   try {
-    const quotation = await prisma.quotationInvoice.findUnique({
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    const quotation = await prisma.quotationInvoice.findFirst({
       where: {
         id: Number(req.params.id),
+        company_id: companyId,
       },
       include: {
         customer: true,
@@ -261,11 +304,20 @@ const getSingleQuotation = async (req, res) => {
 
 const convertQuotationToSale = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     const quotationId = Number(req.params.id);
     
     // Get quotation details
-    const quotation = await prisma.quotationInvoice.findUnique({
-      where: { id: quotationId },
+    const quotation = await prisma.quotationInvoice.findFirst({
+      where: { 
+        id: quotationId,
+        company_id: companyId,
+      },
       include: {
         customer: true,
         user: true,
@@ -283,6 +335,7 @@ const convertQuotationToSale = async (req, res) => {
 
     // Get the next sale invoice number
     const allSales = await prisma.saleInvoice.findMany({
+      where: { company_id: companyId },
       orderBy: { invoice_number: 'desc' },
       take: 1,
     });
@@ -327,8 +380,8 @@ const convertQuotationToSale = async (req, res) => {
     // Get products for purchase price calculation
     const allProduct = await Promise.all(
       saleProducts.map(async (item) => {
-        return await prisma.product.findUnique({
-          where: { id: item.product_id },
+        return await prisma.product.findFirst({
+          where: { id: item.product_id, company_id: companyId },
         });
       })
     );
@@ -360,6 +413,9 @@ const convertQuotationToSale = async (req, res) => {
         round_off_amount: roundOffAmount,
         profit: totalSalePrice - totalProductDiscount - additionalDiscount - totalPurchasePrice,
         due_amount: dueAmount,
+        company: {
+          connect: { id: companyId },
+        },
         customer: {
           connect: { id: quotation.customer_id },
         },
@@ -395,6 +451,9 @@ const convertQuotationToSale = async (req, res) => {
           particulars: `Cash receive on Sale Invoice #${createdSale.id}`,
           type: "sale",
           related_id: createdSale.id,
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
     }
@@ -409,6 +468,9 @@ const convertQuotationToSale = async (req, res) => {
           particulars: `Due on Sale Invoice #${createdSale.id}`,
           type: "sale",
           related_id: createdSale.id,
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
     }
@@ -422,6 +484,9 @@ const convertQuotationToSale = async (req, res) => {
         particulars: `Cost of sales on Sale Invoice #${createdSale.id}`,
         type: "sale",
         related_id: createdSale.id,
+        company: {
+          connect: { id: companyId },
+        },
       },
     });
 
@@ -444,10 +509,17 @@ const convertQuotationToSale = async (req, res) => {
 
 const updateSingleQuotation = async (req, res) => {
   try {
-    // Check if the quotation exists
-    const existingQuotation = await prisma.quotationInvoice.findUnique({
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Check if the quotation exists and belongs to the user's company
+    const existingQuotation = await prisma.quotationInvoice.findFirst({
       where: {
         id: Number(req.params.id),
+        company_id: companyId,
       },
     });
 
@@ -460,6 +532,7 @@ const updateSingleQuotation = async (req, res) => {
       existingQuotation.invoice_number !== Number(req.body.invoiceNumber) &&
       (await prisma.quotationInvoice.findFirst({
         where: {
+          company_id: companyId,
           OR: [
             {
               prefix: req.body.prefix,
@@ -513,7 +586,7 @@ const updateSingleQuotation = async (req, res) => {
       const productData = item.product_data;
       
       let existingProduct = await prisma.product.findFirst({
-        where: { isbn: productData.isbn }
+        where: { isbn: productData.isbn, company_id: companyId }
       });
       
       if (existingProduct) {
@@ -524,12 +597,12 @@ const updateSingleQuotation = async (req, res) => {
       let publisherId = productData.book_publisher_id;
       if (!publisherId && productData.publisher_name) {
         let publisher = await prisma.book_publisher.findFirst({
-          where: { name: productData.publisher_name }
+          where: { name: productData.publisher_name, company_id: companyId }
         });
         
         if (!publisher) {
           publisher = await prisma.book_publisher.create({
-            data: { name: productData.publisher_name }
+            data: { name: productData.publisher_name, company_id: companyId }
           });
         }
         publisherId = publisher.id;
@@ -544,6 +617,7 @@ const updateSingleQuotation = async (req, res) => {
         quantity: parseInt(productData.quantity) || 0,
         unit_measurement: parseFloat(productData.unit_measurement) || 0,
         unit_type: productData.unit_type || "",
+        company_id: companyId,
       };
       
       if (productData.product_currency_id) {
@@ -571,7 +645,24 @@ const updateSingleQuotation = async (req, res) => {
       updateProductIdMap.set(productData.isbn, createdProduct.id);
     }
     
-    // Step 2: Map all products to their IDs
+    // Step 2: Verify products with product_id belong to the company
+    const updateProductIds = req.body.saleInvoiceProduct
+      .filter(item => item.product_id)
+      .map(item => Number(item.product_id));
+    
+    if (updateProductIds.length > 0) {
+      const updateProducts = await prisma.product.findMany({
+        where: { id: { in: updateProductIds } },
+        select: { id: true, company_id: true },
+      });
+
+      const invalidUpdateProducts = updateProducts.filter(p => p.company_id !== companyId);
+      if (invalidUpdateProducts.length > 0) {
+        return res.status(403).json({ error: "Some products do not belong to your company" });
+      }
+    }
+
+    // Step 3: Map all products to their IDs
     const updateProcessedProducts = req.body.saleInvoiceProduct.map((item) => {
       if (item.product_id) {
         return { ...item, final_product_id: Number(item.product_id) };

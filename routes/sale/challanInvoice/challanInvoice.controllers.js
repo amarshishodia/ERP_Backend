@@ -1,12 +1,20 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const createSingleChallan = async (req, res) => {
   try {
+    // Resolve company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ message: "User company not found" });
+    }
+
     // Check if invoice number is already taken
     const existingChallan = await prisma.challanInvoice.findFirst({
       where: {
+        company_id: companyId,
         OR: [
           {
             prefix: req.body.prefix,
@@ -35,7 +43,7 @@ const createSingleChallan = async (req, res) => {
       
       // Check if product already exists by ISBN (in case of race condition)
       let existingProduct = await prisma.product.findFirst({
-        where: { isbn: productData.isbn }
+        where: { isbn: productData.isbn, company_id: companyId },
       });
       
       if (existingProduct) {
@@ -47,12 +55,12 @@ const createSingleChallan = async (req, res) => {
       let publisherId = productData.book_publisher_id;
       if (!publisherId && productData.publisher_name) {
         let publisher = await prisma.book_publisher.findFirst({
-          where: { name: productData.publisher_name }
+          where: { name: productData.publisher_name, company_id: companyId },
         });
         
         if (!publisher) {
           publisher = await prisma.book_publisher.create({
-            data: { name: productData.publisher_name }
+            data: { name: productData.publisher_name, company_id: companyId },
           });
         }
         publisherId = publisher.id;
@@ -68,38 +76,56 @@ const createSingleChallan = async (req, res) => {
         quantity: parseInt(productData.quantity) || 0,
         unit_measurement: parseFloat(productData.unit_measurement) || 0,
         unit_type: productData.unit_type || "",
+        company_id: companyId,
       };
       
       // Connect currency (required field)
       if (productData.product_currency_id) {
         newProductData.product_currency = {
-          connect: { id: Number(productData.product_currency_id) }
+          connect: { id: Number(productData.product_currency_id) },
         };
       }
       
       // Connect publisher if available
       if (publisherId) {
         newProductData.book_publisher = {
-          connect: { id: Number(publisherId) }
+          connect: { id: Number(publisherId) },
         };
       }
       
       // Connect category if available
       if (productData.product_category_id) {
         newProductData.product_category = {
-          connect: { id: Number(productData.product_category_id) }
+          connect: { id: Number(productData.product_category_id) },
         };
       }
       
       // Create the new product
       const createdProduct = await prisma.product.create({
-        data: newProductData
+        data: newProductData,
       });
       
       productIdMap.set(productData.isbn, createdProduct.id);
     }
     
-    // Step 2: Map all products to their IDs
+    // Step 2: Verify products with product_id belong to the company
+    const productIds = req.body.saleInvoiceProduct
+      .filter(item => item.product_id)
+      .map(item => Number(item.product_id));
+    
+    if (productIds.length > 0) {
+      const products = await prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, company_id: true },
+      });
+
+      const invalidProducts = products.filter(p => p.company_id !== companyId);
+      if (invalidProducts.length > 0) {
+        return res.status(403).json({ error: "Some products do not belong to your company" });
+      }
+    }
+
+    // Step 3: Map all products to their IDs
     const processedProducts = req.body.saleInvoiceProduct.map((item) => {
       if (item.product_id) {
         return { ...item, final_product_id: Number(item.product_id) };
@@ -110,7 +136,7 @@ const createSingleChallan = async (req, res) => {
       }
     });
 
-    // Step 3: Calculate totals
+    // Step 4: Calculate totals
     let totalSalePrice = 0;
     let totalProductDiscount = 0;
     let totalProductQty = 0;
@@ -150,6 +176,9 @@ const createSingleChallan = async (req, res) => {
         total_product_qty: totalProductQty,
         round_off_enabled: roundOffEnabled,
         round_off_amount: roundOffAmount,
+        company: {
+          connect: { id: companyId },
+        },
         customer: {
           connect: {
             id: Number(req.body.customer_id),
@@ -176,9 +205,7 @@ const createSingleChallan = async (req, res) => {
             product_sale_price: parseFloat(product.product_sale_price),
             product_sale_discount: parseFloat(product.product_sale_discount || 0),
             product_sale_currency: product.product_sale_currency,
-            product_sale_conversion: parseFloat(
-              product.product_sale_conversion
-            ),
+            product_sale_conversion: parseFloat(product.product_sale_conversion),
           })),
         },
       },
@@ -211,6 +238,11 @@ const createSingleChallan = async (req, res) => {
 
 const getAllChallan = async (req, res) => {
   try {
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ message: "User company not found" });
+    }
+
     const { skip, limit } = getPagination(req.query);
     const startdate = req.query.startdate;
     const enddate = req.query.enddate;
@@ -221,6 +253,7 @@ const getAllChallan = async (req, res) => {
           gte: new Date(startdate),
           lte: new Date(enddate),
         },
+        company_id: companyId,
       },
       include: {
         customer: true,
@@ -248,9 +281,15 @@ const getAllChallan = async (req, res) => {
 
 const getSingleChallan = async (req, res) => {
   try {
-    const challan = await prisma.challanInvoice.findUnique({
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ message: "User company not found" });
+    }
+
+    const challan = await prisma.challanInvoice.findFirst({
       where: {
         id: Number(req.params.id),
+        company_id: companyId,
       },
       include: {
         customer: true,
@@ -276,11 +315,19 @@ const getSingleChallan = async (req, res) => {
 
 const convertChallanToSale = async (req, res) => {
   try {
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ message: "User company not found" });
+    }
+
     const challanId = Number(req.params.id);
     
     // Get challan details
-    const challan = await prisma.challanInvoice.findUnique({
-      where: { id: challanId },
+    const challan = await prisma.challanInvoice.findFirst({
+      where: { 
+        id: challanId,
+        company_id: companyId,
+      },
       include: {
         customer: true,
         user: true,
@@ -298,7 +345,8 @@ const convertChallanToSale = async (req, res) => {
 
     // Get the next sale invoice number
     const allSales = await prisma.saleInvoice.findMany({
-      orderBy: { invoice_number: 'desc' },
+      where: { company_id: companyId },
+      orderBy: { invoice_number: "desc" },
       take: 1,
     });
     
@@ -342,8 +390,8 @@ const convertChallanToSale = async (req, res) => {
     // Get products for purchase price calculation
     const allProduct = await Promise.all(
       saleProducts.map(async (item) => {
-        return await prisma.product.findUnique({
-          where: { id: item.product_id },
+        return await prisma.product.findFirst({
+          where: { id: item.product_id, company_id: companyId },
         });
       })
     );
@@ -375,6 +423,9 @@ const convertChallanToSale = async (req, res) => {
         round_off_amount: roundOffAmount,
         profit: totalSalePrice - totalProductDiscount - additionalDiscount - totalPurchasePrice,
         due_amount: dueAmount,
+        company: {
+          connect: { id: companyId },
+        },
         customer: {
           connect: { id: challan.customer_id },
         },
@@ -410,6 +461,9 @@ const convertChallanToSale = async (req, res) => {
           particulars: `Cash receive on Sale Invoice #${createdSale.id}`,
           type: "sale",
           related_id: createdSale.id,
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
     }
@@ -424,6 +478,9 @@ const convertChallanToSale = async (req, res) => {
           particulars: `Due on Sale Invoice #${createdSale.id}`,
           type: "sale",
           related_id: createdSale.id,
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
     }
@@ -437,6 +494,9 @@ const convertChallanToSale = async (req, res) => {
         particulars: `Cost of sales on Sale Invoice #${createdSale.id}`,
         type: "sale",
         related_id: createdSale.id,
+        company: {
+          connect: { id: companyId },
+        },
       },
     });
 
@@ -454,15 +514,21 @@ const convertChallanToSale = async (req, res) => {
 
 const updateSingleChallan = async (req, res) => {
   try {
-    // Check if the challan exists
-    const existingChallan = await prisma.challanInvoice.findUnique({
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ message: "User company not found" });
+    }
+
+    // Check if the challan exists and belongs to the user's company
+    const existingChallan = await prisma.challanInvoice.findFirst({
       where: {
         id: Number(req.params.id),
+        company_id: companyId,
       },
     });
 
     if (!existingChallan) {
-      return res.status(404).json({ message: 'Challan not found.' });
+      return res.status(404).json({ message: "Challan not found." });
     }
 
     // Check if the invoice number is being updated to one that already exists
@@ -470,6 +536,7 @@ const updateSingleChallan = async (req, res) => {
       existingChallan.invoice_number !== Number(req.body.invoiceNumber) &&
       (await prisma.challanInvoice.findFirst({
         where: {
+          company_id: companyId,
           OR: [
             {
               prefix: req.body.prefix,
@@ -523,7 +590,7 @@ const updateSingleChallan = async (req, res) => {
       const productData = item.product_data;
       
       let existingProduct = await prisma.product.findFirst({
-        where: { isbn: productData.isbn }
+        where: { isbn: productData.isbn, company_id: companyId }
       });
       
       if (existingProduct) {
@@ -534,12 +601,12 @@ const updateSingleChallan = async (req, res) => {
       let publisherId = productData.book_publisher_id;
       if (!publisherId && productData.publisher_name) {
         let publisher = await prisma.book_publisher.findFirst({
-          where: { name: productData.publisher_name }
+          where: { name: productData.publisher_name, company_id: companyId }
         });
         
         if (!publisher) {
           publisher = await prisma.book_publisher.create({
-            data: { name: productData.publisher_name }
+            data: { name: productData.publisher_name, company_id: companyId }
           });
         }
         publisherId = publisher.id;
@@ -554,6 +621,7 @@ const updateSingleChallan = async (req, res) => {
         quantity: parseInt(productData.quantity) || 0,
         unit_measurement: parseFloat(productData.unit_measurement) || 0,
         unit_type: productData.unit_type || "",
+        company_id: companyId,
       };
       
       if (productData.product_currency_id) {
@@ -581,7 +649,24 @@ const updateSingleChallan = async (req, res) => {
       updateProductIdMap.set(productData.isbn, createdProduct.id);
     }
     
-    // Step 2: Map all products to their IDs
+    // Step 2: Verify products with product_id belong to the company
+    const updateProductIds = req.body.saleInvoiceProduct
+      .filter(item => item.product_id)
+      .map(item => Number(item.product_id));
+    
+    if (updateProductIds.length > 0) {
+      const updateProducts = await prisma.product.findMany({
+        where: { id: { in: updateProductIds } },
+        select: { id: true, company_id: true },
+      });
+
+      const invalidUpdateProducts = updateProducts.filter(p => p.company_id !== companyId);
+      if (invalidUpdateProducts.length > 0) {
+        return res.status(403).json({ error: "Some products do not belong to your company" });
+      }
+    }
+
+    // Step 3: Map all products to their IDs
     const updateProcessedProducts = req.body.saleInvoiceProduct.map((item) => {
       if (item.product_id) {
         return { ...item, final_product_id: Number(item.product_id) };
@@ -593,15 +678,15 @@ const updateSingleChallan = async (req, res) => {
     });
 
     // Get previous challan products to restore stock
-    const previousChallan = await prisma.challanInvoice.findUnique({
-      where: { id: Number(req.params.id) },
+    const previousChallanProducts = await prisma.challanInvoice.findFirst({
+      where: { id: Number(req.params.id), company_id: companyId },
       include: { challanInvoiceProduct: true },
     });
 
     // Restore stock from previous products (async properly)
-    if (previousChallan && previousChallan.challanInvoiceProduct) {
+    if (previousChallanProducts && previousChallanProducts.challanInvoiceProduct) {
       await Promise.all(
-        previousChallan.challanInvoiceProduct.map((item) =>
+        previousChallanProducts.challanInvoiceProduct.map((item) =>
           prisma.product.update({
             where: { id: item.product_id },
             data: {

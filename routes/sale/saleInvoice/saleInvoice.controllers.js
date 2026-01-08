@@ -1,33 +1,32 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 const { createTransactionWithSubAccounts } = require("../../../utils/transactionHelper");
 
 const createSingleSaleInvoice = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
     
     // Check if invoice number is already taken
     const existingInvoice = await prisma.saleInvoice.findFirst({
-    //   where: {
-    //     invoice_number: Number(req.body.invoiceNumber),
-    //   },
-    // });
-
-    // if (existingInvoice) {
-    //   return res.status(400).json({ message: 'Invoice number is already taken.' });
-    // }
-    where: {
-      OR: [
-        {
-          prefix: req.body.prefix,
-          invoice_number: Number(req.body.invoiceNumber),
-        },
-        {
-          invoice_number: Number(req.body.invoiceNumber),
-        },
-      ],
-    },
-  });
+      where: {
+        company_id: companyId,
+        OR: [
+          {
+            prefix: req.body.prefix,
+            invoice_number: Number(req.body.invoiceNumber),
+          },
+          {
+            invoice_number: Number(req.body.invoiceNumber),
+          },
+        ],
+      },
+    });
 
   if (existingInvoice && existingInvoice.prefix === req.body.prefix) {
     return res.status(400).json({ message: 'Invoice number is already taken.' });
@@ -45,7 +44,7 @@ const createSingleSaleInvoice = async (req, res) => {
       
       // Check if product already exists by ISBN (in case of race condition)
       let existingProduct = await prisma.product.findFirst({
-        where: { isbn: productData.isbn }
+        where: { isbn: productData.isbn, company_id: companyId }
       });
       
       if (existingProduct) {
@@ -57,12 +56,12 @@ const createSingleSaleInvoice = async (req, res) => {
       let publisherId = productData.book_publisher_id;
       if (!publisherId && productData.publisher_name) {
         let publisher = await prisma.book_publisher.findFirst({
-          where: { name: productData.publisher_name }
+          where: { name: productData.publisher_name, company_id: companyId }
         });
         
         if (!publisher) {
           publisher = await prisma.book_publisher.create({
-            data: { name: productData.publisher_name }
+            data: { name: productData.publisher_name, company_id: companyId }
           });
         }
         publisherId = publisher.id;
@@ -78,6 +77,7 @@ const createSingleSaleInvoice = async (req, res) => {
         quantity: parseInt(productData.quantity) || 0,
         unit_measurement: parseFloat(productData.unit_measurement) || 0,
         unit_type: productData.unit_type || "",
+        company_id: companyId,
       };
       
       // Connect currency (required field)
@@ -109,7 +109,24 @@ const createSingleSaleInvoice = async (req, res) => {
       productIdMap.set(productData.isbn, createdProduct.id);
     }
     
-    // Step 2: Map all products to their IDs
+    // Step 2: Verify products with product_id belong to the company
+    const productIds = req.body.saleInvoiceProduct
+      .filter(item => item.product_id)
+      .map(item => Number(item.product_id));
+    
+    if (productIds.length > 0) {
+      const products = await prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, company_id: true },
+      });
+
+      const invalidProducts = products.filter(p => p.company_id !== companyId);
+      if (invalidProducts.length > 0) {
+        return res.status(403).json({ error: "Some products do not belong to your company" });
+      }
+    }
+
+    // Step 3: Map all products to their IDs
     const processedProducts = req.body.saleInvoiceProduct.map((item) => {
       if (item.product_id) {
         return { ...item, final_product_id: Number(item.product_id) };
@@ -120,7 +137,7 @@ const createSingleSaleInvoice = async (req, res) => {
       }
     });
 
-    // Step 3: Calculate totals
+    // Step 4: Calculate totals
     let totalSalePrice = 0;
     let totalProductDiscount = 0;
     let totalProductQty = 0;
@@ -150,12 +167,13 @@ const createSingleSaleInvoice = async (req, res) => {
     const paidAmount = parseFloat(req.body.paid_amount) || 0;
     const dueAmount = finalTotal - paidAmount;
     
-    // Step 4: Get all products for purchase price calculation
+    // Step 5: Get all products for purchase price calculation
     const allProduct = await Promise.all(
       processedProducts.map(async (item) => {
-        const product = await prisma.product.findUnique({
+        const product = await prisma.product.findFirst({
           where: {
             id: item.final_product_id,
+            company_id: companyId,
           },
         });
         return product;
@@ -189,6 +207,9 @@ const createSingleSaleInvoice = async (req, res) => {
           additionalDiscount -
           totalPurchasePrice,
         due_amount: dueAmount,
+        company: {
+          connect: { id: companyId },
+        },
         customer: {
           connect: {
             id: Number(req.body.customer_id),
@@ -234,6 +255,7 @@ const createSingleSaleInvoice = async (req, res) => {
         particulars: `Cash receive on Sale Invoice #${createdInvoice.id}`,
         type: "sale",
         related_id: createdInvoice.id,
+        company_id: companyId,
       });
     }
     // if sale on due another transactions will be created as journal entry
@@ -246,6 +268,7 @@ const createSingleSaleInvoice = async (req, res) => {
         particulars: `Due on Sale Invoice #${createdInvoice.id}`,
         type: "sale",
         related_id: createdInvoice.id,
+        company_id: companyId,
       });
     }
     // cost of sales will be created as journal entry
@@ -257,6 +280,7 @@ const createSingleSaleInvoice = async (req, res) => {
       particulars: `Cost of sales on Sale Invoice #${createdInvoice.id}`,
       type: "sale",
       related_id: createdInvoice.id,
+      company_id: companyId,
     });
     // iterate through all products of this sale invoice and decrease product quantity
     processedProducts.forEach(async (item) => {
@@ -283,8 +307,17 @@ const createSingleSaleInvoice = async (req, res) => {
 
 
 const getAllSaleInvoice = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "info") {
     const aggregations = await prisma.saleInvoice.aggregate({
+      where: {
+        company_id: companyId,
+      },
       _count: {
         id: true,
       },
@@ -327,6 +360,7 @@ const getAllSaleInvoice = async (req, res) => {
                   lte: new Date(req.query.enddate),
                 },
                 user_id: Number(req.query.user),
+                company_id: companyId,
               },
             }),
             // get saleInvoice paginated and by start and end date
@@ -376,6 +410,7 @@ const getAllSaleInvoice = async (req, res) => {
                   lte: new Date(req.query.enddate),
                 },
                 user_id: Number(req.query.user),
+                company_id: companyId,
               },
             }),
           ]);
@@ -402,6 +437,7 @@ const getAllSaleInvoice = async (req, res) => {
                   lte: new Date(req.query.enddate),
                 },
                 user_id: Number(req.query.user),
+                company_id: companyId,
               },
             }),
             // get saleInvoice paginated and by start and end date
@@ -448,6 +484,7 @@ const getAllSaleInvoice = async (req, res) => {
                   lte: new Date(req.query.enddate),
                 },
                 user_id: Number(req.query.user),
+                company_id: companyId,
               },
             }),
           ]);
@@ -475,6 +512,7 @@ const getAllSaleInvoice = async (req, res) => {
                   gte: new Date(req.query.startdate),
                   lte: new Date(req.query.enddate),
                 },
+                company_id: companyId,
               },
             }),
             // get saleInvoice paginated and by start and end date
@@ -522,6 +560,7 @@ const getAllSaleInvoice = async (req, res) => {
                   gte: new Date(req.query.startdate),
                   lte: new Date(req.query.enddate),
                 },
+                company_id: companyId,
               },
             }),
           ]);
@@ -547,6 +586,7 @@ const getAllSaleInvoice = async (req, res) => {
                   gte: new Date(req.query.startdate),
                   lte: new Date(req.query.enddate),
                 },
+                company_id: companyId,
               },
             }),
             // get saleInvoice paginated and by start and end date
@@ -592,6 +632,7 @@ const getAllSaleInvoice = async (req, res) => {
                   gte: new Date(req.query.startdate),
                   lte: new Date(req.query.enddate),
                 },
+                company_id: companyId,
               },
             }),
           ]);
@@ -604,6 +645,7 @@ const getAllSaleInvoice = async (req, res) => {
           related_id: {
             in: saleInvoices.map((item) => item.id),
           },
+          company_id: companyId,
           OR: [
             {
               debit_id: 1,
@@ -621,6 +663,7 @@ const getAllSaleInvoice = async (req, res) => {
           related_id: {
             in: saleInvoices.map((item) => item.id),
           },
+          company_id: companyId,
           OR: [
             {
               credit_id: 1,
@@ -638,6 +681,7 @@ const getAllSaleInvoice = async (req, res) => {
           related_id: {
             in: saleInvoices.map((item) => item.id),
           },
+          company_id: companyId,
           debit_id: 14,
         },
         include: {
@@ -658,6 +702,7 @@ const getAllSaleInvoice = async (req, res) => {
           saleInvoice_id: {
             in: saleInvoices.map((item) => item.id),
           },
+          company_id: companyId,
         },
       });
       // calculate paid amount and due amount of individual sale invoice from transactions and returnSaleInvoice and attach it to saleInvoices
@@ -736,9 +781,16 @@ const getAllSaleInvoice = async (req, res) => {
 
 const getSingleSaleInvoice = async (req, res) => {
   try {
-    const singleSaleInvoice = await prisma.saleInvoice.findUnique({
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    const singleSaleInvoice = await prisma.saleInvoice.findFirst({
       where: {
         id: Number(req.params.id),
+        company_id: companyId,
         // invoice_number: Number(req.params.invoice_number)
       },
       include: {
@@ -760,10 +812,16 @@ const getSingleSaleInvoice = async (req, res) => {
         },
       },
     });
+
+    if (!singleSaleInvoice) {
+      return res.status(404).json({ error: "Sale invoice not found" });
+    }
+
     // view the transactions of the sale invoice
     const transactions = await prisma.transaction.findMany({
       where: {
         related_id: Number(req.params.id),
+        company_id: companyId,
         OR: [
           {
             type: "sale",
@@ -794,6 +852,7 @@ const getSingleSaleInvoice = async (req, res) => {
       where: {
         type: "sale",
         related_id: Number(req.params.id),
+        company_id: companyId,
         OR: [
           {
             debit_id: 1,
@@ -823,6 +882,7 @@ const getSingleSaleInvoice = async (req, res) => {
     const returnSaleInvoice = await prisma.returnSaleInvoice.findMany({
       where: {
         saleInvoice_id: Number(req.params.id),
+        company_id: companyId,
       },
       include: {
         returnSaleInvoiceProduct: {
@@ -837,6 +897,7 @@ const getSingleSaleInvoice = async (req, res) => {
       where: {
         type: "sale",
         related_id: Number(req.params.id),
+        company_id: companyId,
         debit_id: 14,
         // credit_id: {
         //   not: null, // Only include transactions with valid credit_id
@@ -861,6 +922,7 @@ const getSingleSaleInvoice = async (req, res) => {
       where: {
         type: "sale_return",
         related_id: Number(req.params.id),
+        company_id: companyId,
         OR: [
           {
             credit_id: 1,
@@ -948,10 +1010,17 @@ const getSingleSaleInvoice = async (req, res) => {
 
 const updateSingleSaleInvoice = async (req, res) => {
   try {
-    // Check if the sale invoice exists
-    const existingInvoice = await prisma.saleInvoice.findUnique({
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Check if the sale invoice exists and belongs to the user's company
+    const existingInvoice = await prisma.saleInvoice.findFirst({
       where: {
-        id: Number(req.params.id), // Use the invoice ID from params to find the invoice
+        id: Number(req.params.id),
+        company_id: companyId,
       },
     });
 
@@ -964,6 +1033,7 @@ const updateSingleSaleInvoice = async (req, res) => {
       existingInvoice.invoice_number !== Number(req.body.invoiceNumber) &&
       (await prisma.saleInvoice.findFirst({
         where: {
+          company_id: companyId,
           OR: [
             {
               prefix: req.body.prefix,
@@ -977,6 +1047,18 @@ const updateSingleSaleInvoice = async (req, res) => {
       }))
     ) {
       return res.status(400).json({ message: 'Invoice number is already taken.' });
+    }
+
+    // Verify that all products belong to the user's company
+    const productIds = req.body.saleInvoiceProduct.map(p => Number(p.product_id));
+    const products = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, company_id: true, purchase_price: true },
+    });
+
+    const invalidProducts = products.filter(p => p.company_id !== companyId);
+    if (invalidProducts.length > 0) {
+      return res.status(403).json({ error: "Some products do not belong to your company" });
     }
 
     // Calculate the new total sale price, total discount, and other values
@@ -1003,9 +1085,10 @@ const updateSingleSaleInvoice = async (req, res) => {
     // Get all product information asynchronously
     const allProduct = await Promise.all(
       req.body.saleInvoiceProduct.map(async (item) => {
-        const product = await prisma.product.findUnique({
+        const product = await prisma.product.findFirst({
           where: {
             id: item.product_id,
+            company_id: companyId,
           },
         });
         return product;
@@ -1091,6 +1174,9 @@ const updateSingleSaleInvoice = async (req, res) => {
           particulars: `Cash receive on Sale Invoice #${updatedInvoice.id}`,
           type: 'sale',
           related_id: updatedInvoice.id,
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
     }
@@ -1109,6 +1195,9 @@ const updateSingleSaleInvoice = async (req, res) => {
           particulars: `Due on Sale Invoice #${updatedInvoice.id}`,
           type: 'sale',
           related_id: updatedInvoice.id,
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
     }
@@ -1122,6 +1211,9 @@ const updateSingleSaleInvoice = async (req, res) => {
         particulars: `Cost of sales on Sale Invoice #${updatedInvoice.id}`,
         type: 'sale',
         related_id: updatedInvoice.id,
+        company: {
+          connect: { id: companyId },
+        },
       },
     });
 

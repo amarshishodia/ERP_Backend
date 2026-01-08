@@ -1,8 +1,15 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const createSingleReturnPurchaseInvoice = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   // calculate total purchase price (NET after product-level discount from original purchase)
   let totalPurchasePrice = 0;
   try {
@@ -16,6 +23,15 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
         purchaseInvoiceProduct: true,
       },
     });
+
+    if (!singlePurchaseInvoice) {
+      return res.status(404).json({ error: "Purchase invoice not found" });
+    }
+
+    // Verify that the purchase invoice belongs to the user's company
+    if (singlePurchaseInvoice.company_id !== companyId) {
+      return res.status(403).json({ error: "Purchase invoice does not belong to your company" });
+    }
     // map product_id -> discount% from original purchase
     const productIdToDiscount = new Map(
       singlePurchaseInvoice.purchaseInvoiceProduct.map((p) => [
@@ -39,6 +55,7 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
     const transactions2 = await prisma.transaction.findMany({
       where: {
         type: "purchase",
+        company_id: companyId,
         related_id: Number(req.body.purchaseInvoice_id),
         OR: [
           {
@@ -54,6 +71,7 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
     const transactions3 = await prisma.transaction.findMany({
       where: {
         type: "purchase",
+        company_id: companyId,
         related_id: Number(req.body.purchaseInvoice_id),
         credit_id: 13,
       },
@@ -62,6 +80,7 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
     const transactions4 = await prisma.transaction.findMany({
       where: {
         type: "purchase_return",
+        company_id: companyId,
         related_id: Number(req.body.purchaseInvoice_id),
         OR: [
           {
@@ -77,6 +96,7 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
     const returnPurchaseInvoice = await prisma.returnPurchaseInvoice.findMany({
       where: {
         purchaseInvoice_id: Number(req.body.purchaseInvoice_id),
+        company_id: companyId,
       },
       include: {
         returnPurchaseInvoiceProduct: {
@@ -129,6 +149,7 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
         data: {
           date: new Date(date),
           total_amount: totalPurchasePrice,
+          company_id: companyId,
           purchaseInvoice: {
             connect: {
               id: Number(req.body.purchaseInvoice_id),
@@ -166,6 +187,7 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
           particulars: `Account payable (due) reduced on Purchase return invoice #${createdReturnPurchaseInvoice.id} of purchase invoice #${req.body.purchaseInvoice_id}`,
           type: "purchase_return",
           related_id: Number(req.body.purchaseInvoice_id),
+          company_id: companyId,
         },
       });
     }
@@ -180,6 +202,7 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
           particulars: `Account payable (due) reduced on Purchase return invoice #${createdReturnPurchaseInvoice.id} of purchase invoice #${req.body.purchaseInvoice_id}`,
           type: "purchase_return",
           related_id: Number(req.body.purchaseInvoice_id),
+          company_id: companyId,
         },
       });
       await prisma.transaction.create({
@@ -191,6 +214,7 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
           particulars: `Cash receive on Purchase return invoice #${createdReturnPurchaseInvoice.id} of purchase invoice #${req.body.purchaseInvoice_id}`,
           type: "purchase_return",
           related_id: Number(req.body.purchaseInvoice_id),
+          company_id: companyId,
         },
       });
     }
@@ -216,9 +240,18 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
   }
 };
 const getAllReturnPurchaseInvoice = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "info") {
     // get purchase invoice info
     const aggregations = await prisma.returnPurchaseInvoice.aggregate({
+      where: {
+        company_id: companyId,
+      },
       _count: {
         id: true,
       },
@@ -229,8 +262,11 @@ const getAllReturnPurchaseInvoice = async (req, res) => {
     res.json(aggregations);
   } else if (req.query.query === "all") {
     try {
-      // get all purchase invoice
+      // get all purchase invoice for user's company
       const allPurchaseInvoice = await prisma.returnPurchaseInvoice.findMany({
+        where: {
+          company_id: companyId,
+        },
         include: {
           purchaseInvoice: true,
         },
@@ -242,8 +278,11 @@ const getAllReturnPurchaseInvoice = async (req, res) => {
     }
   } else if (req.query.query === "group") {
     try {
-      // get all purchase invoice
+      // get all purchase invoice grouped by date for user's company
       const allPurchaseInvoice = await prisma.returnPurchaseInvoice.groupBy({
+        where: {
+          company_id: companyId,
+        },
         orderBy: {
           date: "asc",
         },
@@ -278,6 +317,7 @@ const getAllReturnPurchaseInvoice = async (req, res) => {
               lte: new Date(req.query.enddate),
             },
             status: false,
+            company_id: companyId,
           },
         }),
         // get returnPurchaseInvoice paginated and by start and end date
@@ -298,6 +338,7 @@ const getAllReturnPurchaseInvoice = async (req, res) => {
               lte: new Date(req.query.enddate),
             },
             status: false,
+            company_id: companyId,
           },
         }),
       ]);
@@ -325,6 +366,7 @@ const getAllReturnPurchaseInvoice = async (req, res) => {
               lte: new Date(req.query.enddate),
             },
             status: true,
+            company_id: companyId,
           },
         }),
         // get returnPurchaseInvoice paginated and by start and end date
@@ -345,6 +387,7 @@ const getAllReturnPurchaseInvoice = async (req, res) => {
               lte: new Date(req.query.enddate),
             },
             status: true,
+            company_id: companyId,
           },
         }),
       ]);
@@ -358,6 +401,12 @@ const getAllReturnPurchaseInvoice = async (req, res) => {
 
 const getSingleReturnPurchaseInvoice = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     const singleProduct = await prisma.returnPurchaseInvoice.findUnique({
       where: {
         id: Number(req.params.id),
@@ -371,6 +420,16 @@ const getSingleReturnPurchaseInvoice = async (req, res) => {
         purchaseInvoice: true,
       },
     });
+
+    if (!singleProduct) {
+      return res.status(404).json({ error: "Return purchase invoice not found" });
+    }
+
+    // Verify that the return purchase invoice belongs to the user's company
+    if (singleProduct.company_id !== companyId) {
+      return res.status(403).json({ error: "Return purchase invoice does not belong to your company" });
+    }
+
     res.json(singleProduct);
   } catch (error) {
     res.status(400).json(error.message);
@@ -381,6 +440,26 @@ const getSingleReturnPurchaseInvoice = async (req, res) => {
 // TODO: update purchase invoice: NO UPDATE ALLOWED FOR NOW
 const updateSingleReturnPurchaseInvoice = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the return purchase invoice belongs to the user's company
+    const existingReturnInvoice = await prisma.returnPurchaseInvoice.findUnique({
+      where: { id: Number(req.params.id) },
+      select: { company_id: true },
+    });
+
+    if (!existingReturnInvoice) {
+      return res.status(404).json({ error: "Return purchase invoice not found" });
+    }
+
+    if (existingReturnInvoice.company_id !== companyId) {
+      return res.status(403).json({ error: "Return purchase invoice does not belong to your company" });
+    }
+
     const updatedProduct = await prisma.returnPurchaseInvoice.update({
       where: {
         id: Number(req.params.id),
@@ -403,6 +482,12 @@ const updateSingleReturnPurchaseInvoice = async (req, res) => {
 // on delete purchase invoice, decrease product quantity, supplier due amount decrease, transaction create
 const deleteSingleReturnPurchaseInvoice = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     // get purchase invoice details
     const returnPurchaseInvoice = await prisma.returnPurchaseInvoice.findUnique(
       {
@@ -415,10 +500,23 @@ const deleteSingleReturnPurchaseInvoice = async (req, res) => {
               product: true,
             },
           },
-          supplier: true,
+          purchaseInvoice: {
+            select: {
+              supplier: true,
+            },
+          },
         },
       }
     );
+
+    if (!returnPurchaseInvoice) {
+      return res.status(404).json({ error: "Return purchase invoice not found" });
+    }
+
+    // Verify that the return purchase invoice belongs to the user's company
+    if (returnPurchaseInvoice.company_id !== companyId) {
+      return res.status(403).json({ error: "Return purchase invoice does not belong to your company" });
+    }
     // product quantity decrease
     returnPurchaseInvoice.returnPurchaseInvoiceProduct.forEach(async (item) => {
       await prisma.product.update({

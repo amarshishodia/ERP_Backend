@@ -1,8 +1,39 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const createSingleReturnSaleInvoice = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
+  // Verify that the sale invoice belongs to the user's company
+  const saleInvoice = await prisma.saleInvoice.findFirst({
+    where: {
+      id: Number(req.body.saleInvoice_id),
+      company_id: companyId,
+    },
+  });
+
+  if (!saleInvoice) {
+    return res.status(404).json({ error: "Sale invoice not found" });
+  }
+
+  // Verify that all products belong to the user's company
+  const productIds = req.body.returnSaleInvoiceProduct.map(p => Number(p.product_id));
+  const products = await prisma.product.findMany({
+    where: { id: { in: productIds } },
+    select: { id: true, company_id: true, purchase_price: true },
+  });
+
+  const invalidProducts = products.filter(p => p.company_id !== companyId);
+  if (invalidProducts.length > 0) {
+    return res.status(403).json({ error: "Some products do not belong to your company" });
+  }
+
   // calculate total sale price
   let totalSalePrice = 0;
   req.body.returnSaleInvoiceProduct.forEach((item) => {
@@ -12,9 +43,10 @@ const createSingleReturnSaleInvoice = async (req, res) => {
   // get all product asynchronously
   const allProduct = await Promise.all(
     req.body.returnSaleInvoiceProduct.map(async (item) => {
-      const product = await prisma.product.findUnique({
+      const product = await prisma.product.findFirst({
         where: {
           id: item.product_id,
+          company_id: companyId,
         },
       });
       return product;
@@ -29,9 +61,10 @@ const createSingleReturnSaleInvoice = async (req, res) => {
   try {
     // ==========================START calculate the due amount of sale invoice ==========================
     // calculate the due before return sale invoice creation
-    const singleSaleInvoice = await prisma.saleInvoice.findUnique({
+    const singleSaleInvoice = await prisma.saleInvoice.findFirst({
       where: {
         id: Number(req.body.saleInvoice_id),
+        company_id: companyId,
       },
       include: {
         saleInvoiceProduct: {
@@ -53,6 +86,7 @@ const createSingleReturnSaleInvoice = async (req, res) => {
       where: {
         type: "sale",
         related_id: Number(req.body.saleInvoice_id),
+        company_id: companyId,
         OR: [
           {
             debit_id: 1,
@@ -79,6 +113,7 @@ const createSingleReturnSaleInvoice = async (req, res) => {
     const returnSaleInvoice = await prisma.returnSaleInvoice.findMany({
       where: {
         saleInvoice_id: Number(req.body.saleInvoice_id),
+        company_id: companyId,
       },
       include: {
         returnSaleInvoiceProduct: {
@@ -93,6 +128,7 @@ const createSingleReturnSaleInvoice = async (req, res) => {
       where: {
         type: "sale",
         related_id: Number(req.body.saleInvoice_id),
+        company_id: companyId,
         debit_id: 14,
       },
       include: {
@@ -114,6 +150,7 @@ const createSingleReturnSaleInvoice = async (req, res) => {
       where: {
         type: "sale_return",
         related_id: Number(req.body.saleInvoice_id),
+        company_id: companyId,
         OR: [
           {
             credit_id: 1,
@@ -178,6 +215,9 @@ const createSingleReturnSaleInvoice = async (req, res) => {
       data: {
         date: new Date(date),
         total_amount: totalSalePrice,
+        company: {
+          connect: { id: companyId },
+        },
         saleInvoice: {
           connect: {
             id: Number(req.body.saleInvoice_id),
@@ -211,6 +251,9 @@ const createSingleReturnSaleInvoice = async (req, res) => {
           particulars: `Account Receivable on Sale return invoice #${createdReturnSaleInvoice.id} of sale invoice #${req.body.saleInvoice_id}`,
           type: "sale_return",
           related_id: Number(req.body.saleInvoice_id),
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
     }
@@ -227,6 +270,9 @@ const createSingleReturnSaleInvoice = async (req, res) => {
           particulars: `Account Receivable on Sale return invoice #${createdReturnSaleInvoice.id} of sale invoice #${req.body.saleInvoice_id}`,
           type: "sale_return",
           related_id: Number(req.body.saleInvoice_id),
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
       await prisma.transaction.create({
@@ -238,6 +284,9 @@ const createSingleReturnSaleInvoice = async (req, res) => {
           particulars: `Cash paid on Sale return invoice #${createdReturnSaleInvoice.id} of sale invoice #${req.body.saleInvoice_id}`,
           type: "sale_return",
           related_id: Number(req.body.saleInvoice_id),
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
     }
@@ -251,6 +300,9 @@ const createSingleReturnSaleInvoice = async (req, res) => {
         particulars: `Cost of sales reduce on Sale return Invoice #${createdReturnSaleInvoice.id} of sale invoice #${req.body.saleInvoice_id}`,
         type: "sale_return",
         related_id: req.body.saleInvoice_id,
+        company: {
+          connect: { id: companyId },
+        },
       },
     });
     // iterate through all products of this return sale invoice and increase the product quantity,
@@ -286,9 +338,18 @@ const createSingleReturnSaleInvoice = async (req, res) => {
 };
 
 const getAllReturnSaleInvoice = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "info") {
     // get sale invoice info
     const aggregations = await prisma.returnSaleInvoice.aggregate({
+      where: {
+        company_id: companyId,
+      },
       _count: {
         id: true,
       },
@@ -301,8 +362,15 @@ const getAllReturnSaleInvoice = async (req, res) => {
     try {
       // get all sale invoice
       const allSaleInvoice = await prisma.returnSaleInvoice.findMany({
+        where: {
+          company_id: companyId,
+        },
         include: {
-          saleInvoice: true,
+          saleInvoice: {
+            where: {
+              company_id: companyId,
+            },
+          },
         },
       });
       res.json(allSaleInvoice);
@@ -314,6 +382,9 @@ const getAllReturnSaleInvoice = async (req, res) => {
     try {
       // get all sale invoice
       const allSaleInvoice = await prisma.returnSaleInvoice.groupBy({
+        where: {
+          company_id: companyId,
+        },
         orderBy: {
           date: "asc",
         },
@@ -348,6 +419,7 @@ const getAllReturnSaleInvoice = async (req, res) => {
               lte: new Date(req.query.enddate),
             },
             status: false,
+            company_id: companyId,
           },
         }),
         // get returnsaleInvoice paginated and by start and end date
@@ -360,7 +432,11 @@ const getAllReturnSaleInvoice = async (req, res) => {
           skip: Number(skip),
           take: Number(limit),
           include: {
-            saleInvoice: true,
+            saleInvoice: {
+              where: {
+                company_id: companyId,
+              },
+            },
           },
           where: {
             date: {
@@ -368,6 +444,7 @@ const getAllReturnSaleInvoice = async (req, res) => {
               lte: new Date(req.query.enddate),
             },
             status: false,
+            company_id: companyId,
           },
         }),
       ]);
@@ -395,6 +472,7 @@ const getAllReturnSaleInvoice = async (req, res) => {
               lte: new Date(req.query.enddate),
             },
             status: true,
+            company_id: companyId,
           },
         }),
         // get returnsaleInvoice paginated and by start and end date
@@ -407,7 +485,11 @@ const getAllReturnSaleInvoice = async (req, res) => {
           skip: Number(skip),
           take: Number(limit),
           include: {
-            saleInvoice: true,
+            saleInvoice: {
+              where: {
+                company_id: companyId,
+              },
+            },
           },
           where: {
             date: {
@@ -415,6 +497,7 @@ const getAllReturnSaleInvoice = async (req, res) => {
               lte: new Date(req.query.enddate),
             },
             status: true,
+            company_id: companyId,
           },
         }),
       ]);
@@ -428,9 +511,16 @@ const getAllReturnSaleInvoice = async (req, res) => {
 
 const getSingleReturnSaleInvoice = async (req, res) => {
   try {
-    const singleProduct = await prisma.returnSaleInvoice.findUnique({
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    const singleProduct = await prisma.returnSaleInvoice.findFirst({
       where: {
         id: Number(req.params.id),
+        company_id: companyId,
       },
       include: {
         returnSaleInvoiceProduct: {
@@ -438,9 +528,18 @@ const getSingleReturnSaleInvoice = async (req, res) => {
             product: true,
           },
         },
-        saleInvoice: true,
+        saleInvoice: {
+          where: {
+            company_id: companyId,
+          },
+        },
       },
     });
+
+    if (!singleProduct) {
+      return res.status(404).json({ error: "Return sale invoice not found" });
+    }
+
     res.json(singleProduct);
   } catch (error) {
     res.status(400).json(error.message);
@@ -451,6 +550,24 @@ const getSingleReturnSaleInvoice = async (req, res) => {
 // TODO: update sale invoice: NO UPDATE ALLOWED FOR NOW
 const updateSingleReturnSaleInvoice = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the return sale invoice belongs to the user's company
+    const existingReturnSaleInvoice = await prisma.returnSaleInvoice.findFirst({
+      where: {
+        id: Number(req.params.id),
+        company_id: companyId,
+      },
+    });
+
+    if (!existingReturnSaleInvoice) {
+      return res.status(404).json({ error: "Return sale invoice not found" });
+    }
+
     const updatedProduct = await prisma.returnSaleInvoice.update({
       where: {
         id: Number(req.params.id),
@@ -473,10 +590,17 @@ const updateSingleReturnSaleInvoice = async (req, res) => {
 // on delete purchase invoice, decrease product quantity, customer due amount decrease, transaction create
 const deleteSingleReturnSaleInvoice = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     // get purchase invoice details
-    const returnSaleInvoice = await prisma.returnSaleInvoice.findUnique({
+    const returnSaleInvoice = await prisma.returnSaleInvoice.findFirst({
       where: {
         id: Number(req.params.id),
+        company_id: companyId,
       },
       include: {
         returnSaleInvoiceProduct: {
@@ -484,9 +608,17 @@ const deleteSingleReturnSaleInvoice = async (req, res) => {
             product: true,
           },
         },
-        customer: true,
+        saleInvoice: {
+          where: {
+            company_id: companyId,
+          },
+        },
       },
     });
+
+    if (!returnSaleInvoice) {
+      return res.status(404).json({ error: "Return sale invoice not found" });
+    }
     // product quantity decrease
     returnSaleInvoice.returnSaleInvoiceProduct.forEach(async (item) => {
       await prisma.product.update({

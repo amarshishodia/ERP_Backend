@@ -1,16 +1,24 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const createSingleDesignation = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "deletemany") {
     try {
-      // delete many designation at once
+      // delete many designation at once (only for user's company)
       const deletedDesignation = await prisma.designation.deleteMany({
         where: {
           id: {
             in: req.body,
           },
+          company_id: companyId,
         },
       });
       res.json(deletedDesignation);
@@ -20,9 +28,13 @@ const createSingleDesignation = async (req, res) => {
     }
   } else if (req.query.query === "createmany") {
     try {
-      // create many designation from an array of objects
+      // create many designation from an array of objects with company_id
+      const dataWithCompanyId = req.body.map((item) => ({
+        ...item,
+        company_id: companyId,
+      }));
       const createdDesignation = await prisma.designation.createMany({
-        data: req.body,
+        data: dataWithCompanyId,
         skipDuplicates: true,
       });
       res.json(createdDesignation);
@@ -32,10 +44,11 @@ const createSingleDesignation = async (req, res) => {
     }
   } else {
     try {
-      // create single designation from an object
+      // create single designation from an object with company_id
       const createdDesignation = await prisma.designation.create({
         data: {
           name: req.body.name,
+          company_id: companyId,
         },
       });
       res.json(createdDesignation);
@@ -47,10 +60,19 @@ const createSingleDesignation = async (req, res) => {
 };
 
 const getAllDesignation = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "all") {
     try {
-      // get all designation
+      // get all designation for user's company
       const allDesignation = await prisma.designation.findMany({
+        where: {
+          company_id: companyId,
+        },
         orderBy: {
           id: "asc",
         },
@@ -85,8 +107,11 @@ const getAllDesignation = async (req, res) => {
   } else {
     const { skip, limit } = getPagination(req.query);
     try {
-      // get all designation paginated
+      // get all designation paginated for user's company
       const allDesignation = await prisma.designation.findMany({
+        where: {
+          company_id: companyId,
+        },
         orderBy: {
           id: "asc",
         },
@@ -125,6 +150,12 @@ const getAllDesignation = async (req, res) => {
 
 const getSingleDesignation = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     const singleDesignation = await prisma.designation.findUnique({
       where: {
         id: parseInt(req.params.id),
@@ -152,6 +183,16 @@ const getSingleDesignation = async (req, res) => {
         },
       },
     });
+
+    if (!singleDesignation) {
+      return res.status(404).json({ error: "Designation not found" });
+    }
+
+    // Verify that the designation belongs to the user's company
+    if (singleDesignation.company_id !== companyId) {
+      return res.status(403).json({ error: "Designation does not belong to your company" });
+    }
+
     res.json(singleDesignation);
   } catch (error) {
     res.status(400).json(error.message);
@@ -161,6 +202,26 @@ const getSingleDesignation = async (req, res) => {
 
 const updateSingleDesignation = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the designation belongs to the user's company
+    const existingDesignation = await prisma.designation.findUnique({
+      where: { id: parseInt(req.params.id) },
+      select: { company_id: true },
+    });
+
+    if (!existingDesignation) {
+      return res.status(404).json({ error: "Designation not found" });
+    }
+
+    if (existingDesignation.company_id !== companyId) {
+      return res.status(403).json({ error: "Designation does not belong to your company" });
+    }
+
     const updatedDesignation = await prisma.designation.update({
       where: {
         id: parseInt(req.params.id),
@@ -178,6 +239,26 @@ const updateSingleDesignation = async (req, res) => {
 
 const deleteSingleDesignation = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the designation belongs to the user's company
+    const existingDesignation = await prisma.designation.findUnique({
+      where: { id: parseInt(req.params.id) },
+      select: { company_id: true },
+    });
+
+    if (!existingDesignation) {
+      return res.status(404).json({ error: "Designation not found" });
+    }
+
+    if (existingDesignation.company_id !== companyId) {
+      return res.status(403).json({ error: "Designation does not belong to your company" });
+    }
+
     const deletedDesignation = await prisma.designation.delete({
       where: {
         id: parseInt(req.params.id),

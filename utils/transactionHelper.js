@@ -11,10 +11,15 @@ const prisma = new PrismaClient();
  * @param {number} transactionData.amount - Transaction amount
  * @param {string} transactionData.type - Transaction type (optional)
  * @param {number} transactionData.related_id - Related entity ID (optional)
+ * @param {number} transactionData.company_id - Company ID (required)
  * @returns {Promise<Object>} Created transaction
  */
 const createTransactionWithSubAccounts = async (transactionData) => {
-  const { date, sub_debit_id, sub_credit_id, particulars, amount, type, related_id } = transactionData;
+  const { date, sub_debit_id, sub_credit_id, particulars, amount, type, related_id, company_id } = transactionData;
+
+  if (!company_id) {
+    throw new Error("company_id is required for transaction creation");
+  }
 
   // Fetch sub-accounts to get their main account IDs
   const subDebitAccount = await prisma.subAccount.findUnique({
@@ -58,6 +63,7 @@ const createTransactionWithSubAccounts = async (transactionData) => {
       amount: parseFloat(amount),
       type: type || null,
       related_id: related_id || null,
+      company_id: company_id,
     },
   });
 };

@@ -1,4 +1,5 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 const cacheService = require("../../../utils/cache");
@@ -9,14 +10,21 @@ const PORT = process.env.PORT || 2029;
 const HOST = process.env.HOST;
 
 const createSingleProduct = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "deletemany") {
     try {
-      // delete many product at once
+      // delete many product at once (only for user's company)
       const deletedProduct = await prisma.product.deleteMany({
         where: {
           id: {
             in: req.body.map((id) => Number(id)),
           },
+          company_id: companyId,
         },
       });
       res.json(deletedProduct);
@@ -30,7 +38,7 @@ const createSingleProduct = async (req, res) => {
       const totalPurchasePrice = req.body.reduce((acc, cur) => {
         return acc + cur.quantity * cur.purchase_price;
       }, 0);
-      // convert incoming data to specific format
+      // convert incoming data to specific format with company_id
       const data = req.body.map((item) => {
         return {
           name: item.name,
@@ -46,6 +54,7 @@ const createSingleProduct = async (req, res) => {
           author: item.author,
           product_currency_id: parseInt(item.product_currency_id),
           book_publisher_id: parseInt(item.book_publisher_id),
+          company_id: companyId,
         };
       });
       // create many product from an array of object
@@ -53,7 +62,7 @@ const createSingleProduct = async (req, res) => {
         data: data,
         skipDuplicates: true,
       });
-      // stock product's account transaction create
+      // stock product's account transaction create with company_id
       await prisma.transaction.create({
         data: {
           date: new Date(),
@@ -61,6 +70,7 @@ const createSingleProduct = async (req, res) => {
           credit_id: 6,
           amount: totalPurchasePrice,
           particulars: `Initial stock of ${createdProduct.count} item/s of product`,
+          company_id: companyId,
         },
       });
       res.json(createdProduct);
@@ -72,10 +82,11 @@ const createSingleProduct = async (req, res) => {
     try {
       // create one product from an object
 
-      // Check if ISBN is already taken
+      // Check if ISBN is already taken for this company
       const existingProduct = await prisma.product.findFirst({
         where: {
           isbn: req.body.isbn,
+          company_id: companyId,
         },
       });
 
@@ -90,6 +101,7 @@ const createSingleProduct = async (req, res) => {
         isbn: req.body.isbn,
         name: req.body.name,
         author: req.body.author || null,
+        company_id: companyId,
         book_publisher: {
           connect: { id: Number(req.body.book_publisher_id) }
         },
@@ -138,6 +150,7 @@ console.log("Credit subAccount:", subAcc);
           sub_credit_id: 6, // Capital
           amount: purchasePrice * quantity,
           particulars: `Initial stock of product #${createdProduct.id}`,
+          company_id: companyId,
         });
       }
 
@@ -153,6 +166,12 @@ console.log("Credit subAccount:", subAcc);
 };
 
 const getAllProduct = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "all") {
     try {
       // Get pagination parameters
@@ -160,8 +179,8 @@ const getAllProduct = async (req, res) => {
       const limit = parseInt(req.query.limit) || 50; // Default to 50 instead of all
       const status = req.query.status !== "false";
 
-      // Try to get from cache first
-      const cacheKey = `products:${status}:${page}:${limit}`;
+      // Try to get from cache first (cache key should include company_id)
+      const cacheKey = `products:${companyId}:${status}:${page}:${limit}`;
       const cachedData = await cacheService.getProducts(page, limit, status);
       
       if (cachedData) {
@@ -174,13 +193,15 @@ const getAllProduct = async (req, res) => {
       // Get total count for pagination
       const totalCount = await prisma.product.count({
         where: {
-          status: status
+          status: status,
+          company_id: companyId,
         }
       });
 
       const allProduct = await prisma.product.findMany({
         where: {
-          status: status
+          status: status,
+          company_id: companyId,
         },
         orderBy: {
           id: "desc",
@@ -282,8 +303,9 @@ const getAllProduct = async (req, res) => {
             },
           },
         ],
-        status: true
-      } : { status: true };
+        status: true,
+        company_id: companyId,
+      } : { status: true, company_id: companyId };
 
       // Get total count for pagination
       const totalCount = await prisma.product.count({
@@ -404,10 +426,15 @@ const getAllProduct = async (req, res) => {
       },
       where: {
         status: true,
+        company_id: companyId,
       },
     });
     // get all product and calculate all purchase price and sale price
-    const allProduct = await prisma.product.findMany();
+    const allProduct = await prisma.product.findMany({
+      where: {
+        company_id: companyId,
+      },
+    });
     const totalPurchasePrice = allProduct.reduce((acc, cur) => {
       return acc + cur.quantity * cur.purchase_price;
     }, 0);
@@ -426,6 +453,7 @@ const getAllProduct = async (req, res) => {
         },
         where: {
           status: false,
+          company_id: companyId,
         },
         include: {
           product_category: {
@@ -475,6 +503,7 @@ const getAllProduct = async (req, res) => {
         },
         where: {
           status: true,
+          company_id: companyId,
         },
         include: {
           product_category: {
@@ -516,11 +545,27 @@ const getAllProduct = async (req, res) => {
 
 const getSingleProduct = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     const singleProduct = await prisma.product.findUnique({
       where: {
         id: Number(req.params.id),
       },
     });
+
+    if (!singleProduct) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    // Verify that the product belongs to the user's company
+    if (singleProduct.company_id !== companyId) {
+      return res.status(403).json({ error: "Product does not belong to your company" });
+    }
+
     if (singleProduct && singleProduct.imageName) {
       singleProduct.imageUrl = `${HOST}:${PORT}/v1/product-image/${singleProduct.imageName}`;
     }
@@ -533,6 +578,26 @@ const getSingleProduct = async (req, res) => {
 
 const updateSingleProduct = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the product belongs to the user's company
+    const existingProduct = await prisma.product.findUnique({
+      where: { id: Number(req.params.id) },
+      select: { company_id: true },
+    });
+
+    if (!existingProduct) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    if (existingProduct.company_id !== companyId) {
+      return res.status(403).json({ error: "Product does not belong to your company" });
+    }
+
     const file = req.file;
     
     const updateData = {
@@ -578,6 +643,26 @@ const updateSingleProduct = async (req, res) => {
 
 const deleteSingleProduct = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the product belongs to the user's company
+    const existingProduct = await prisma.product.findUnique({
+      where: { id: Number(req.params.id) },
+      select: { company_id: true },
+    });
+
+    if (!existingProduct) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    if (existingProduct.company_id !== companyId) {
+      return res.status(403).json({ error: "Product does not belong to your company" });
+    }
+
     const deletedProduct = await prisma.product.update({
       where: {
         id: Number(req.params.id),

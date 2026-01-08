@@ -1,9 +1,42 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 const { createTransactionWithSubAccounts } = require("../../../utils/transactionHelper");
 
 const createSinglePurchaseInvoice = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
+  // Verify that the supplier belongs to the user's company
+  const supplier = await prisma.supplier.findUnique({
+    where: { id: Number(req.body.supplier_id) },
+    select: { company_id: true },
+  });
+
+  if (!supplier) {
+    return res.status(404).json({ error: "Supplier not found" });
+  }
+
+  if (supplier.company_id !== companyId) {
+    return res.status(403).json({ error: "Supplier does not belong to your company" });
+  }
+
+  // Verify that all products belong to the user's company
+  const productIds = req.body.purchaseInvoiceProduct.map(p => Number(p.product_id));
+  const products = await prisma.product.findMany({
+    where: { id: { in: productIds } },
+    select: { id: true, company_id: true },
+  });
+
+  const invalidProducts = products.filter(p => p.company_id !== companyId);
+  if (invalidProducts.length > 0) {
+    return res.status(403).json({ error: "Some products do not belong to your company" });
+  }
+
   // calculate total purchase price with product-level discounts
   // using purchase price, product_quantity and product_discount
   let totalPurchasePrice = 0;
@@ -39,6 +72,7 @@ const createSinglePurchaseInvoice = async (req, res) => {
         total_product_discount: totalProductDiscount,
         round_off_enabled: req.body.round_off_enabled || false,
         round_off_amount: roundOffAmount,
+        company_id: companyId,
         supplier: {
           connect: {
             id: Number(req.body.supplier_id),
@@ -71,6 +105,7 @@ const createSinglePurchaseInvoice = async (req, res) => {
         particulars: `Cash paid on Purchase Invoice #${createdInvoice.id}`,
         type: "purchase",
         related_id: createdInvoice.id,
+        company_id: companyId,
       });
     }
     // if purchase on due then create another transaction
@@ -83,6 +118,7 @@ const createSinglePurchaseInvoice = async (req, res) => {
         particulars: `Due on Purchase Invoice #${createdInvoice.id}`,
         type: "purchase",
         related_id: createdInvoice.id,
+        company_id: companyId,
       });
     }
     // iterate through all products of this purchase invoice and add product quantity, update product purchase price to database
@@ -130,9 +166,18 @@ const createSinglePurchaseInvoice = async (req, res) => {
 };
 
 const getAllPurchaseInvoice = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "info") {
     // get purchase invoice info
     const aggregations = await prisma.purchaseInvoice.aggregate({
+      where: {
+        company_id: companyId,
+      },
       _count: {
         id: true,
       },
@@ -164,6 +209,7 @@ const getAllPurchaseInvoice = async (req, res) => {
               gte: new Date(req.query.startdate),
               lte: new Date(req.query.enddate),
             },
+            company_id: companyId,
           },
         }),
         // get purchaseInvoice paginated and by start and end date
@@ -187,6 +233,7 @@ const getAllPurchaseInvoice = async (req, res) => {
               gte: new Date(req.query.startdate),
               lte: new Date(req.query.enddate),
             },
+            company_id: companyId,
           },
         }),
       ]);
@@ -195,6 +242,7 @@ const getAllPurchaseInvoice = async (req, res) => {
       const transactions = await prisma.transaction.findMany({
         where: {
           type: "purchase",
+          company_id: companyId,
           related_id: {
             in: purchaseInvoices.map((item) => item.id),
           },
@@ -212,6 +260,7 @@ const getAllPurchaseInvoice = async (req, res) => {
       const transactions2 = await prisma.transaction.findMany({
         where: {
           type: "purchase_return",
+          company_id: companyId,
           related_id: {
             in: purchaseInvoices.map((item) => item.id),
           },
@@ -229,6 +278,7 @@ const getAllPurchaseInvoice = async (req, res) => {
       const transactions3 = await prisma.transaction.findMany({
         where: {
           type: "purchase",
+          company_id: companyId,
           related_id: {
             in: purchaseInvoices.map((item) => item.id),
           },
@@ -303,6 +353,12 @@ const getAllPurchaseInvoice = async (req, res) => {
 
 const getSinglePurchaseInvoice = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     // get single purchase invoice information with products
     const singlePurchaseInvoice = await prisma.purchaseInvoice.findUnique({
       where: {
@@ -322,10 +378,21 @@ const getSinglePurchaseInvoice = async (req, res) => {
         supplier: true,
       },
     });
+
+    if (!singlePurchaseInvoice) {
+      return res.status(404).json({ error: "Purchase invoice not found" });
+    }
+
+    // Verify that the purchase invoice belongs to the user's company
+    if (singlePurchaseInvoice.company_id !== companyId) {
+      return res.status(403).json({ error: "Purchase invoice does not belong to your company" });
+    }
+
     // get all transactions related to this purchase invoice
     const transactions = await prisma.transaction.findMany({
       where: {
         related_id: Number(req.params.id),
+        company_id: companyId,
         OR: [
           {
             type: "purchase",
@@ -352,6 +419,7 @@ const getSinglePurchaseInvoice = async (req, res) => {
     const transactions2 = await prisma.transaction.findMany({
       where: {
         type: "purchase",
+        company_id: companyId,
         related_id: Number(req.params.id),
         OR: [
           {
@@ -367,6 +435,7 @@ const getSinglePurchaseInvoice = async (req, res) => {
     const transactions3 = await prisma.transaction.findMany({
       where: {
         type: "purchase",
+        company_id: companyId,
         related_id: Number(req.params.id),
         credit_id: 13,
       },
@@ -375,6 +444,7 @@ const getSinglePurchaseInvoice = async (req, res) => {
     const transactions4 = await prisma.transaction.findMany({
       where: {
         type: "purchase_return",
+        company_id: companyId,
         related_id: Number(req.params.id),
         OR: [
           {

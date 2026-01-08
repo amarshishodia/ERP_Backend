@@ -1,17 +1,25 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 const { getObjectSignedUrl } = require("../../../utils/s3");
 
 const createSingleProductCategory = async (req, res) => {
+	// Get company_id from logged-in user
+	const companyId = await getCompanyId(req.auth.sub);
+	if (!companyId) {
+		return res.status(400).json({ error: "User company_id not found" });
+	}
+
 	if (req.query.query === "deletemany") {
 		try {
-			// delete many product_category at once
+			// delete many product_category at once (only for user's company)
 			const deletedProductCategory = await prisma.product_category.deleteMany({
 				where: {
 					id: {
 						in: req.body.map((id) => parseInt(id)),
 					},
+					company_id: companyId,
 				},
 			});
 			res.json(deletedProductCategory);
@@ -21,11 +29,12 @@ const createSingleProductCategory = async (req, res) => {
 		}
 	} else if (req.query.query === "createmany") {
 		try {
-			// create many product_category from an array of objects
+			// create many product_category from an array of objects with company_id
 			const createdProductCategory = await prisma.product_category.createMany({
 				data: req.body.map((product_category) => {
 					return {
 						name: product_category.name,
+						company_id: companyId,
 					};
 				}),
 				skipDuplicates: true,
@@ -37,10 +46,11 @@ const createSingleProductCategory = async (req, res) => {
 		}
 	} else {
 		try {
-			// create single product_category from an object
+			// create single product_category from an object with company_id
 			const createdProductCategory = await prisma.product_category.create({
 				data: {
 					name: req.body.name,
+					company_id: companyId,
 				},
 			});
 			res.json(createdProductCategory);
@@ -52,10 +62,19 @@ const createSingleProductCategory = async (req, res) => {
 };
 
 const getAllProductCategory = async (req, res) => {
+	// Get company_id from logged-in user
+	const companyId = await getCompanyId(req.auth.sub);
+	if (!companyId) {
+		return res.status(400).json({ error: "User company_id not found" });
+	}
+
 	if (req.query.query === "all") {
 		try {
-			// get all product_category
+			// get all product_category for user's company
 			const getAllProductCategory = await prisma.product_category.findMany({
+				where: {
+					company_id: companyId,
+				},
 				orderBy: {
 					id: "asc",
 				},
@@ -71,8 +90,11 @@ const getAllProductCategory = async (req, res) => {
 	} else {
 		const { skip, limit } = getPagination(req.query);
 		try {
-			// get all product_category paginated
+			// get all product_category paginated for user's company
 			const getAllProductCategory = await prisma.product_category.findMany({
+				where: {
+					company_id: companyId,
+				},
 				orderBy: {
 					id: "asc",
 				},
@@ -92,6 +114,12 @@ const getAllProductCategory = async (req, res) => {
 
 const getSingleProductCategory = async (req, res) => {
 	try {
+		// Get company_id from logged-in user
+		const companyId = await getCompanyId(req.auth.sub);
+		if (!companyId) {
+			return res.status(400).json({ error: "User company_id not found" });
+		}
+
 		const singleProductCategory = await prisma.product_category.findUnique({
 			where: {
 				id: parseInt(req.params.id),
@@ -100,6 +128,16 @@ const getSingleProductCategory = async (req, res) => {
 				product: true,
 			},
 		});
+
+		if (!singleProductCategory) {
+			return res.status(404).json({ error: "Product category not found" });
+		}
+
+		// Verify that the product category belongs to the user's company
+		if (singleProductCategory.company_id !== companyId) {
+			return res.status(403).json({ error: "Product category does not belong to your company" });
+		}
+
 		//adding image url to product_category
 		// for (let product of singleProductCategory.product) {
 		// 	if (product.imageName) {
@@ -115,6 +153,26 @@ const getSingleProductCategory = async (req, res) => {
 
 const updateSingleProductCategory = async (req, res) => {
 	try {
+		// Get company_id from logged-in user
+		const companyId = await getCompanyId(req.auth.sub);
+		if (!companyId) {
+			return res.status(400).json({ error: "User company_id not found" });
+		}
+
+		// Verify that the product category belongs to the user's company
+		const existingProductCategory = await prisma.product_category.findUnique({
+			where: { id: parseInt(req.params.id) },
+			select: { company_id: true },
+		});
+
+		if (!existingProductCategory) {
+			return res.status(404).json({ error: "Product category not found" });
+		}
+
+		if (existingProductCategory.company_id !== companyId) {
+			return res.status(403).json({ error: "Product category does not belong to your company" });
+		}
+
 		const updatedProductCategory = await prisma.product_category.update({
 			where: {
 				id: parseInt(req.params.id),
@@ -132,6 +190,26 @@ const updateSingleProductCategory = async (req, res) => {
 
 const deleteSingleProductCategory = async (req, res) => {
 	try {
+		// Get company_id from logged-in user
+		const companyId = await getCompanyId(req.auth.sub);
+		if (!companyId) {
+			return res.status(400).json({ error: "User company_id not found" });
+		}
+
+		// Verify that the product category belongs to the user's company
+		const existingProductCategory = await prisma.product_category.findUnique({
+			where: { id: parseInt(req.params.id) },
+			select: { company_id: true },
+		});
+
+		if (!existingProductCategory) {
+			return res.status(404).json({ error: "Product category not found" });
+		}
+
+		if (existingProductCategory.company_id !== companyId) {
+			return res.status(403).json({ error: "Product category does not belong to your company" });
+		}
+
 		const deletedProductCategory = await prisma.product_category.delete({
 			where: {
 				id: parseInt(req.params.id),

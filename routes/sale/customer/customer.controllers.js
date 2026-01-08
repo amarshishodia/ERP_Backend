@@ -1,8 +1,15 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const createSingleCustomer = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "deletemany") {
     try {
       // delete many customer at once
@@ -11,6 +18,7 @@ const createSingleCustomer = async (req, res) => {
           id: {
             in: req.body.map((id) => parseInt(id)),
           },
+          company_id: companyId,
         },
       });
       res.json(deletedAccount);
@@ -27,6 +35,7 @@ const createSingleCustomer = async (req, res) => {
             name: customer.name,
             phone: customer.phone,
             address: customer.address,
+            company_id: companyId,
           };
         }),
         skipDuplicates: true,
@@ -44,6 +53,7 @@ const createSingleCustomer = async (req, res) => {
           name: req.body.name,
           phone: req.body.phone,
           address: req.body.address,
+          company_id: companyId,
         },
       });
       res.json(createdCustomer);
@@ -55,6 +65,12 @@ const createSingleCustomer = async (req, res) => {
 };
 
 const getAllCustomer = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "all") {
     try {
       console.log("Getting all customers with status:", req.query.status);
@@ -64,10 +80,15 @@ const getAllCustomer = async (req, res) => {
           id: "asc",
         },
         include: {
-          saleInvoice: true,
+          saleInvoice: {
+            where: {
+              company_id: companyId,
+            },
+          },
         },
         where: {
           status: req.query.status === "false" ? false : true,
+          company_id: companyId,
         },
       });
       console.log("Found customers:", allCustomer.length);
@@ -84,6 +105,7 @@ const getAllCustomer = async (req, res) => {
       },
       where: {
         status: true,
+        company_id: companyId,
       },
     });
     res.json(aggregations);
@@ -96,10 +118,15 @@ const getAllCustomer = async (req, res) => {
           id: "asc",
         },
         include: {
-          saleInvoice: true,
+          saleInvoice: {
+            where: {
+              company_id: companyId,
+            },
+          },
         },
         where: {
           status: false,
+          company_id: companyId,
         },
         skip: parseInt(skip),
         take: parseInt(limit),
@@ -120,10 +147,15 @@ const getAllCustomer = async (req, res) => {
         skip: parseInt(skip),
         take: parseInt(limit),
         include: {
-          saleInvoice: true,
+          saleInvoice: {
+            where: {
+              company_id: companyId,
+            },
+          },
         },
         where: {
           status: true,
+          company_id: companyId,
         },
       });
       res.json(allCustomer);
@@ -136,14 +168,29 @@ const getAllCustomer = async (req, res) => {
 
 const getSingleCustomer = async (req, res) => {
   try {
-    const singleCustomer = await prisma.customer.findUnique({
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    const singleCustomer = await prisma.customer.findFirst({
       where: {
         id: parseInt(req.params.id),
+        company_id: companyId,
       },
       include: {
-        saleInvoice: true,
+        saleInvoice: {
+          where: {
+            company_id: companyId,
+          },
+        },
       },
     });
+
+    if (!singleCustomer) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
 
     // get individual customer's due amount by calculating: sale invoice's total_amount - return sale invoices - transactions
     const allSaleInvoiceTotalAmount = await prisma.saleInvoice.aggregate({
@@ -153,25 +200,36 @@ const getSingleCustomer = async (req, res) => {
       },
       where: {
         customer_id: parseInt(req.params.id),
+        company_id: companyId,
       },
     });
     // all invoice of a customer with return sale invoice nested
-    const customersAllInvoice = await prisma.customer.findUnique({
+    const customersAllInvoice = await prisma.customer.findFirst({
       where: {
         id: parseInt(req.params.id),
+        company_id: companyId,
       },
       include: {
         saleInvoice: {
+          where: {
+            company_id: companyId,
+          },
           include: {
             returnSaleInvoice: {
               where: {
                 status: true,
+                company_id: companyId,
               },
             },
           },
         },
       },
     });
+
+    if (!customersAllInvoice) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+
     // get all return sale invoice of a customer
     const allReturnSaleInvoice = customersAllInvoice.saleInvoice.map(
       (invoice) => {
@@ -203,6 +261,7 @@ const getSingleCustomer = async (req, res) => {
         related_id: {
           in: allSaleInvoiceId,
         },
+        company_id: companyId,
         OR: [
           {
             debit_id: 1,
@@ -232,6 +291,7 @@ const getSingleCustomer = async (req, res) => {
         related_id: {
           in: allSaleInvoiceId,
         },
+        company_id: companyId,
         OR: [
           {
             credit_id: 1,
@@ -261,6 +321,7 @@ const getSingleCustomer = async (req, res) => {
         related_id: {
           in: allSaleInvoiceId,
         },
+        company_id: companyId,
         debit_id: 14,
       },
       include: {
@@ -291,6 +352,7 @@ const getSingleCustomer = async (req, res) => {
         related_id: {
           in: allSaleInvoiceId,
         },
+        company_id: companyId,
       },
       include: {
         debit: {
@@ -367,6 +429,24 @@ const getSingleCustomer = async (req, res) => {
 
 const updateSingleCustomer = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the customer belongs to the user's company
+    const existingCustomer = await prisma.customer.findFirst({
+      where: {
+        id: parseInt(req.params.id),
+        company_id: companyId,
+      },
+    });
+
+    if (!existingCustomer) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+
     const updatedCustomer = await prisma.customer.update({
       where: {
         id: parseInt(req.params.id),
@@ -386,6 +466,24 @@ const updateSingleCustomer = async (req, res) => {
 
 const deleteSingleCustomer = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the customer belongs to the user's company
+    const existingCustomer = await prisma.customer.findFirst({
+      where: {
+        id: parseInt(req.params.id),
+        company_id: companyId,
+      },
+    });
+
+    if (!existingCustomer) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+
     const deletedCustomer = await prisma.customer.update({
       where: {
         id: parseInt(req.params.id),

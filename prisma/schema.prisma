@@ -15,6 +15,7 @@ model user {
   email          String?       @unique
   salary         Int?
   designation_id Int?
+  company_id     Int?
   join_date      DateTime?
   leave_date     DateTime?
   id_no          String?       @unique
@@ -30,22 +31,29 @@ model user {
   quotationInvoice quotationInvoice[]
   challanInvoice   challanInvoice[]
   designation      designation?        @relation(fields: [designation_id], references: [id])
+  company          appSetting?          @relation(fields: [company_id], references: [id])
 
   @@index([designation_id], map: "user_designation_id_fkey")
+  @@index([company_id])
 }
 
 model designation {
   id        Int      @id @default(autoincrement())
-  name      String   @unique
+  name      String
+  company_id Int
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   user      user[]
+  company   appSetting @relation(fields: [company_id], references: [id])
+
+  @@unique([name, company_id])
+  @@index([company_id])
 }
 
 model product {
   id                           Int                            @id @default(autoincrement())
   name                         String?
-  isbn                         String                         @unique
+  isbn                         String
   author                       String?
   quantity                     Int
   purchase_price               Float?
@@ -54,6 +62,7 @@ model product {
   product_category_id          Int?
   product_currency_id          Int?
   book_publisher_id            Int?
+  company_id                   Int
   unit_measurement             Float?
   unit_type                    String?
   reorder_quantity             Int?
@@ -64,6 +73,7 @@ model product {
   book_publisher               book_publisher?                @relation(fields: [book_publisher_id], references: [id])
   product_category             product_category?              @relation(fields: [product_category_id], references: [id])
   product_currency             product_currency?              @relation(fields: [product_currency_id], references: [id])
+  company                      appSetting                    @relation(fields: [company_id], references: [id])
   purchaseInvoiceProduct       purchaseInvoiceProduct[]
   returnPurchaseInvoiceProduct returnPurchaseInvoiceProduct[]
   returnSaleInvoiceProduct     returnSaleInvoiceProduct[]
@@ -71,6 +81,7 @@ model product {
   quotationInvoiceProduct      quotationInvoiceProduct[]
   challanInvoiceProduct        challanInvoiceProduct[]
 
+  @@unique([isbn, company_id])
   @@index([book_publisher_id], map: "product_book_publisher_id_fkey")
   @@index([product_category_id], map: "product_product_category_id_fkey")
   @@index([product_currency_id], map: "product_product_currency_id_fkey")
@@ -79,36 +90,52 @@ model product {
   @@index([isbn], map: "product_isbn_idx")
   @@index([sku(length: 100)], map: "product_sku_idx")
   @@index([status], map: "product_status_idx")
+  @@index([company_id])
 }
 
 model product_category {
   id        Int       @id @default(autoincrement())
-  name      String    @unique
+  name      String
+  company_id Int
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   product   product[]
+  company   appSetting @relation(fields: [company_id], references: [id])
+
+  @@unique([name, company_id])
+  @@index([company_id])
 }
 
 model book_publisher {
   id        Int       @id @default(autoincrement())
-  name      String    @unique
+  name      String
+  company_id Int
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   product   product[]
+  company   appSetting @relation(fields: [company_id], references: [id])
 
+  @@unique([name, company_id])
   @@index([name], map: "book_publisher_name_idx")
+  @@index([company_id])
 }
 
 model product_currency {
   id                Int                      @id @default(autoincrement())
-  name              String                   @unique
-  symbol            String                   @unique
+  name              String
+  symbol            String
+  company_id        Int
   conversion        Float                    // Keep for backward compatibility, will use latest rate
   effective_from_date DateTime?              // Keep for backward compatibility
   createdAt         DateTime                 @default(now())
   updatedAt         DateTime                 @updatedAt
   product           product[]
   currency_rates   product_currency_rate[]
+  company           appSetting               @relation(fields: [company_id], references: [id])
+
+  @@unique([name, company_id])
+  @@unique([symbol, company_id])
+  @@index([company_id])
 }
 
 model product_currency_rate {
@@ -127,12 +154,17 @@ model product_currency_rate {
 model supplier {
   id              Int               @id @default(autoincrement())
   name            String
-  phone           String            @unique
+  phone           String
   address         String
+  company_id      Int
   status          Boolean           @default(true)
   created_at      DateTime          @default(now())
   updated_at      DateTime          @updatedAt
   purchaseInvoice purchaseInvoice[]
+  company         appSetting        @relation(fields: [company_id], references: [id])
+
+  @@unique([phone, company_id])
+  @@index([company_id])
 }
 
 model purchaseInvoice {
@@ -146,15 +178,18 @@ model purchaseInvoice {
   round_off_enabled      Boolean?                 @default(false)
   round_off_amount       Float?                   @default(0)
   supplier_id            Int
+  company_id             Int
   note                   String?
   supplier_memo_no       String?
   created_at             DateTime                 @default(now())
   updated_at             DateTime                 @updatedAt
   supplier               supplier                 @relation(fields: [supplier_id], references: [id], onDelete: Cascade)
+  company                appSetting               @relation(fields: [company_id], references: [id])
   returnPurchaseInvoice  returnPurchaseInvoice[]
   purchaseInvoiceProduct purchaseInvoiceProduct[]
 
   @@index([supplier_id], map: "purchaseInvoice_supplier_id_fkey")
+  @@index([company_id])
 }
 
 model purchaseInvoiceProduct {
@@ -176,14 +211,18 @@ model purchaseInvoiceProduct {
 model customer {
   id                 Int                   @id @default(autoincrement())
   name               String
-  phone              String                @unique
+  phone              String
   address            String
   status             Boolean               @default(true)
+  company_id         Int
   created_at         DateTime              @default(now())
   updated_at         DateTime              @updatedAt
+  company            appSetting            @relation(fields: [company_id], references: [id])
   saleInvoice        saleInvoice[]
   quotationInvoice   quotationInvoice[]
   challanInvoice     challanInvoice[]
+
+  @@unique([phone, company_id])
 }
 
 model saleInvoice {
@@ -199,6 +238,7 @@ model saleInvoice {
   profit                 Float
   customer_id            Int
   user_id                Int
+  company_id             Int
   note                   String?
   round_off_enabled      Boolean?             @default(false)
   round_off_amount       Float?               @default(0)
@@ -209,6 +249,7 @@ model saleInvoice {
   prefix                 String?
   customer               customer             @relation(fields: [customer_id], references: [id], onDelete: Cascade)
   user                   user                 @relation(fields: [user_id], references: [id], onDelete: NoAction)
+  company                appSetting           @relation(fields: [company_id], references: [id])
   saleInvoiceProduct     saleInvoiceProduct[]
   returnSaleInvoice      returnSaleInvoice[]
 
@@ -248,26 +289,34 @@ model transaction {
   payment_method  String?
   reference_number String?
   status          Boolean     @default(true)
+  company_id      Int
   created_at      DateTime    @default(now())
   updated_at      DateTime    @updatedAt
   debit           account     @relation("TransactionDebit", fields: [debit_id], references: [id])
   credit          account     @relation("TransactionCredit", fields: [credit_id], references: [id])
   subDebit        subAccount? @relation("TransactionSubDebit", fields: [sub_debit_id], references: [id])
   subCredit       subAccount? @relation("TransactionSubCredit", fields: [sub_credit_id], references: [id])
+  company         appSetting  @relation(fields: [company_id], references: [id])
 
   @@index([credit_id], map: "transaction_credit_id_fkey")
   @@index([debit_id], map: "transaction_debit_id_fkey")
   @@index([sub_credit_id], map: "transaction_sub_credit_id_fkey")
   @@index([sub_debit_id], map: "transaction_sub_debit_id_fkey")
+  @@index([company_id])
 }
 
 model role {
   id             Int              @id @default(autoincrement())
-  name           String           @unique
+  name           String
+  company_id     Int
   status         Boolean          @default(true)
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
   rolePermission rolePermission[]
+  company        appSetting       @relation(fields: [company_id], references: [id])
+
+  @@unique([name, company_id])
+  @@index([company_id])
 }
 
 model permission {
@@ -294,11 +343,16 @@ model rolePermission {
 
 model account {
   id                 Int           @id @default(autoincrement())
-  name               String        @unique
+  name               String
   type               String
+  company_id         Int
   subAccount         subAccount[]
   debitTransactions  transaction[] @relation("TransactionDebit")
   creditTransactions transaction[] @relation("TransactionCredit")
+  company            appSetting    @relation(fields: [company_id], references: [id])
+
+  @@unique([name, company_id])
+  @@index([company_id])
 }
 
 model subAccount {
@@ -319,13 +373,16 @@ model returnPurchaseInvoice {
   total_amount                 Float
   note                         String?
   purchaseInvoice_id           Int
+  company_id                   Int
   status                       Boolean                        @default(true)
   created_at                   DateTime                       @default(now())
   updated_at                   DateTime                       @updatedAt
   purchaseInvoice              purchaseInvoice                @relation(fields: [purchaseInvoice_id], references: [id], onDelete: Cascade)
+  company                      appSetting                     @relation(fields: [company_id], references: [id])
   returnPurchaseInvoiceProduct returnPurchaseInvoiceProduct[]
 
   @@index([purchaseInvoice_id], map: "returnPurchaseInvoice_purchaseInvoice_id_fkey")
+  @@index([company_id])
 }
 
 model returnPurchaseInvoiceProduct {
@@ -350,10 +407,12 @@ model returnSaleInvoice {
   total_amount             Float
   note                     String?
   saleInvoice_id           Int
+  company_id               Int
   status                   Boolean                    @default(true)
   created_at               DateTime                   @default(now())
   updated_at               DateTime                   @updatedAt
   saleInvoice              saleInvoice                @relation(fields: [saleInvoice_id], references: [id], onDelete: Cascade)
+  company                  appSetting                 @relation(fields: [company_id], references: [id])
   returnSaleInvoiceProduct returnSaleInvoiceProduct[]
 
   @@index([saleInvoice_id], map: "returnSaleInvoice_saleInvoice_id_fkey")
@@ -384,6 +443,7 @@ model quotationInvoice {
   total_product_qty      Int?
   customer_id            Int
   user_id                Int
+  company_id             Int
   note                   String?
   round_off_enabled      Boolean?                   @default(false)
   round_off_amount       Float?                     @default(0)
@@ -394,6 +454,7 @@ model quotationInvoice {
   prefix                 String?
   customer               customer                   @relation(fields: [customer_id], references: [id], onDelete: Cascade)
   user                   user                       @relation(fields: [user_id], references: [id], onDelete: NoAction)
+  company                appSetting                 @relation(fields: [company_id], references: [id])
   quotationInvoiceProduct quotationInvoiceProduct[]
 
   @@index([customer_id], map: "quotationInvoice_customer_id_fkey")
@@ -428,6 +489,7 @@ model challanInvoice {
   total_product_qty      Int?
   customer_id            Int
   user_id                Int
+  company_id             Int
   note                   String?
   round_off_enabled      Boolean?             @default(false)
   round_off_amount       Float?               @default(0)
@@ -438,6 +500,7 @@ model challanInvoice {
   prefix                 String?
   customer               customer              @relation(fields: [customer_id], references: [id], onDelete: Cascade)
   user                   user                  @relation(fields: [user_id], references: [id], onDelete: NoAction)
+  company                appSetting            @relation(fields: [company_id], references: [id])
   challanInvoiceProduct  challanInvoiceProduct[]
 
   @@index([customer_id], map: "challanInvoice_customer_id_fkey")
@@ -482,6 +545,23 @@ model appSetting {
   sale_invoice_terms  String? @db.LongText
   quotation_terms     String? @db.LongText
   challan_terms       String? @db.LongText
+  users              user[]
+  accounts           account[]
+  transactions       transaction[]
+  designations       designation[]
+  roles              role[]
+  book_publishers    book_publisher[]
+  products           product[]
+  product_categories product_category[]
+  product_currencies product_currency[]
+  suppliers          supplier[]
+  purchaseInvoices   purchaseInvoice[]
+  returnPurchaseInvoices returnPurchaseInvoice[]
+  challanInvoices    challanInvoice[]
+  customers          customer[]
+  saleInvoices       saleInvoice[]
+  quotationInvoices  quotationInvoice[]
+  returnSaleInvoices returnSaleInvoice[]
 }
 
 model firm {

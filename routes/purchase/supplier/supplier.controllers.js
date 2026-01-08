@@ -1,16 +1,24 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const createSingleSupplier = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "deletemany") {
     try {
-      // delete all suppliers
+      // delete all suppliers (only for user's company)
       const deletedSupplier = await prisma.supplier.deleteMany({
         where: {
           id: {
             in: req.body.map((id) => parseInt(id)),
           },
+          company_id: companyId,
         },
       });
       res.json(deletedSupplier);
@@ -20,13 +28,14 @@ const createSingleSupplier = async (req, res) => {
     }
   } else if (req.query.query === "createmany") {
     try {
-      // create many suppliers from an array of objects
+      // create many suppliers from an array of objects with company_id
       const createdSupplier = await prisma.supplier.createMany({
         data: req.body.map((supplier) => {
           return {
             name: supplier.name,
             phone: supplier.phone,
             address: supplier.address,
+            company_id: companyId,
           };
         }),
         skipDuplicates: true,
@@ -38,12 +47,13 @@ const createSingleSupplier = async (req, res) => {
     }
   } else {
     try {
-      // create a single supplier from an object
+      // create a single supplier from an object with company_id
       const createdSupplier = await prisma.supplier.create({
         data: {
           name: req.body.name,
           phone: req.body.phone,
           address: req.body.address,
+          company_id: companyId,
         },
       });
 
@@ -56,18 +66,25 @@ const createSingleSupplier = async (req, res) => {
 };
 
 const getAllSupplier = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "all") {
     try {
-      // get all suppliers with status filter
+      // get all suppliers with status filter for user's company
       const allSupplier = await prisma.supplier.findMany({
+        where: {
+          status: req.query.status === "false" ? false : true,
+          company_id: companyId,
+        },
         orderBy: {
           id: "asc",
         },
         include: {
           purchaseInvoice: true,
-        },
-        where: {
-          status: req.query.status === "false" ? false : true,
         },
       });
       res.json(allSupplier);
@@ -78,10 +95,11 @@ const getAllSupplier = async (req, res) => {
   } else if (req.query.status === "false") {
     try {
       const { skip, limit } = getPagination(req.query);
-      // get all suppliers
+      // get all suppliers for user's company
       const allSupplier = await prisma.supplier.findMany({
         where: {
           status: false,
+          company_id: companyId,
         },
         orderBy: {
           id: "asc",
@@ -99,13 +117,14 @@ const getAllSupplier = async (req, res) => {
     }
   } else if (req.query.query === "info") {
     try {
-      // get all suppliers info
+      // get all suppliers info for user's company
       const aggregations = await prisma.supplier.aggregate({
-        _count: {
-          id: true,
-        },
         where: {
           status: true,
+          company_id: companyId,
+        },
+        _count: {
+          id: true,
         },
       });
       res.json(aggregations);
@@ -116,13 +135,14 @@ const getAllSupplier = async (req, res) => {
   } else {
     const { skip, limit } = getPagination(req.query);
     try {
-      // get all suppliers paginated
+      // get all suppliers paginated for user's company
       const allSupplier = await prisma.supplier.findMany({
-        orderBy: {
-          id: "asc",
-        },
         where: {
           status: true,
+          company_id: companyId,
+        },
+        orderBy: {
+          id: "asc",
         },
         skip: parseInt(skip),
         take: parseInt(limit),
@@ -140,6 +160,12 @@ const getAllSupplier = async (req, res) => {
 
 const getSingleSupplier = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     const singleSupplier = await prisma.supplier.findUnique({
       where: {
         id: parseInt(req.params.id),
@@ -148,6 +174,15 @@ const getSingleSupplier = async (req, res) => {
         purchaseInvoice: true,
       },
     });
+
+    if (!singleSupplier) {
+      return res.status(404).json({ error: "Supplier not found" });
+    }
+
+    // Verify that the supplier belongs to the user's company
+    if (singleSupplier.company_id !== companyId) {
+      return res.status(403).json({ error: "Supplier does not belong to your company" });
+    }
 
     // get individual supplier's due amount by calculating: purchase invoice's total_amount - return purchase invoices - transactions
     const allPurchaseInvoiceTotalAmount =
@@ -158,6 +193,7 @@ const getSingleSupplier = async (req, res) => {
         },
         where: {
           supplier_id: parseInt(req.params.id),
+          company_id: companyId,
         },
       });
     // all invoice of a supplier with return purchase invoice nested
@@ -167,10 +203,14 @@ const getSingleSupplier = async (req, res) => {
       },
       include: {
         purchaseInvoice: {
+          where: {
+            company_id: companyId,
+          },
           include: {
             returnPurchaseInvoice: {
               where: {
                 status: true,
+                company_id: companyId,
               },
             },
           },
@@ -209,6 +249,7 @@ const getSingleSupplier = async (req, res) => {
     const allPurchaseTransaction = await prisma.transaction.findMany({
       where: {
         type: "purchase",
+        company_id: companyId,
         related_id: {
           in: allPurchaseInvoiceId,
         },
@@ -238,6 +279,7 @@ const getSingleSupplier = async (req, res) => {
     const allReturnPurchaseTransaction = await prisma.transaction.findMany({
       where: {
         type: "purchase_return",
+        company_id: companyId,
         related_id: {
           in: allPurchaseInvoiceId,
         },
@@ -267,6 +309,7 @@ const getSingleSupplier = async (req, res) => {
     const discountEarned = await prisma.transaction.findMany({
       where: {
         type: "purchase",
+        company_id: companyId,
         related_id: {
           in: allPurchaseInvoiceId,
         },
@@ -297,6 +340,7 @@ const getSingleSupplier = async (req, res) => {
     //get all transactions related to purchaseInvoiceId
     const allTransaction = await prisma.transaction.findMany({
       where: {
+        company_id: companyId,
         related_id: {
           in: allPurchaseInvoiceId,
         },
@@ -380,6 +424,26 @@ const getSingleSupplier = async (req, res) => {
 
 const updateSingleSupplier = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the supplier belongs to the user's company
+    const existingSupplier = await prisma.supplier.findUnique({
+      where: { id: parseInt(req.params.id) },
+      select: { company_id: true },
+    });
+
+    if (!existingSupplier) {
+      return res.status(404).json({ error: "Supplier not found" });
+    }
+
+    if (existingSupplier.company_id !== companyId) {
+      return res.status(403).json({ error: "Supplier does not belong to your company" });
+    }
+
     const updatedSupplier = await prisma.supplier.update({
       where: {
         id: parseInt(req.params.id),
@@ -399,6 +463,26 @@ const updateSingleSupplier = async (req, res) => {
 
 const deleteSingleSupplier = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the supplier belongs to the user's company
+    const existingSupplier = await prisma.supplier.findUnique({
+      where: { id: parseInt(req.params.id) },
+      select: { company_id: true },
+    });
+
+    if (!existingSupplier) {
+      return res.status(404).json({ error: "Supplier not found" });
+    }
+
+    if (existingSupplier.company_id !== companyId) {
+      return res.status(403).json({ error: "Supplier does not belong to your company" });
+    }
+
     // delete a single supplier
     const deletedSupplier = await prisma.supplier.update({
       where: {

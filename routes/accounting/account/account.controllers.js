@@ -1,9 +1,26 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const createSingleAccount = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the account belongs to the user's company
+    const account = await prisma.account.findUnique({
+      where: { id: Number(req.body.account_id) },
+      select: { company_id: true },
+    });
+
+    if (!account || account.company_id !== companyId) {
+      return res.status(403).json({ error: "Account does not belong to your company" });
+    }
+
     const createdAccount = await prisma.subAccount.create({
       data: {
         name: req.body.name,
@@ -22,9 +39,18 @@ const createSingleAccount = async (req, res) => {
 };
 
 const getAllAccount = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "tb") {
     try {
       const allAccount = await prisma.account.findMany({
+        where: {
+          company_id: companyId,
+        },
         orderBy: [
           {
             id: "asc",
@@ -101,6 +127,9 @@ const getAllAccount = async (req, res) => {
   } else if (req.query.query === "bs") {
     try {
       const allAccount = await prisma.account.findMany({
+        where: {
+          company_id: companyId,
+        },
         orderBy: [
           {
             id: "asc",
@@ -196,6 +225,9 @@ const getAllAccount = async (req, res) => {
   } else if (req.query.query === "is") {
     try {
       const allAccount = await prisma.account.findMany({
+        where: {
+          company_id: companyId,
+        },
         orderBy: [
           {
             id: "asc",
@@ -282,6 +314,11 @@ const getAllAccount = async (req, res) => {
     // subAccount
     try {
       const allSubAccount = await prisma.subAccount.findMany({
+        where: {
+          account: {
+            company_id: companyId,
+          },
+        },
         orderBy: [
           {
             id: "asc",
@@ -305,6 +342,9 @@ const getAllAccount = async (req, res) => {
     // mainAccount
     try {
       const allSubAccount = await prisma.account.findMany({
+        where: {
+          company_id: companyId,
+        },
         orderBy: [
           {
             id: "asc",
@@ -319,6 +359,9 @@ const getAllAccount = async (req, res) => {
   } else {
     try {
       const allAccount = await prisma.account.findMany({
+        where: {
+          company_id: companyId,
+        },
         orderBy: [
           {
             id: "asc",
@@ -343,15 +386,36 @@ const getAllAccount = async (req, res) => {
 
 const getSingleAccount = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     const singleAccount = await prisma.subAccount.findUnique({
       where: {
         id: Number(req.params.id),
       },
-          include: {
-            debitTransactions: true,
-            creditTransactions: true,
+      include: {
+        account: {
+          select: {
+            company_id: true,
           },
+        },
+        debitTransactions: true,
+        creditTransactions: true,
+      },
     });
+
+    if (!singleAccount) {
+      return res.status(404).json({ error: "Account not found" });
+    }
+
+    // Verify that the account belongs to the user's company
+    if (singleAccount.account.company_id !== companyId) {
+      return res.status(403).json({ error: "Account does not belong to your company" });
+    }
+
     // calculate balance from total debit and credit
     const totalDebit = singleAccount.debitTransactions.reduce((acc, debit) => {
       return acc + debit.amount;

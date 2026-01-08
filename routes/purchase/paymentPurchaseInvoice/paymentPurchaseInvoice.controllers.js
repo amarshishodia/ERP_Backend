@@ -1,4 +1,5 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
@@ -7,6 +8,12 @@ const prisma = new PrismaClient();
 // pay amount against supplier : ALL IN ONE TRANSACTION DB QUERY
 const createPaymentPurchaseInvoice = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     // convert all incoming data to a specific format.
     const date = new Date(req.body.date).toISOString().split("T")[0];
     // paid amount against purchase invoice using a transaction
@@ -21,6 +28,7 @@ const createPaymentPurchaseInvoice = async (req, res) => {
         related_id: parseInt(req.body.purchase_invoice_no),
         payment_method: req.body.payment_method || null,
         reference_number: req.body.reference_number || null,
+        company_id: companyId,
       },
     });
     // discount earned using a transaction
@@ -37,6 +45,7 @@ const createPaymentPurchaseInvoice = async (req, res) => {
           related_id: parseInt(req.body.purchase_invoice_no),
           payment_method: req.body.payment_method || null,
           reference_number: req.body.reference_number || null,
+          company_id: companyId,
         },
       });
     }
@@ -48,11 +57,18 @@ const createPaymentPurchaseInvoice = async (req, res) => {
 };
 
 const getAllPaymentPurchaseInvoice = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "all") {
     try {
       const allPaymentPurchaseInvoice = await prisma.transaction.findMany({
         where: {
           type: "purchase",
+          company_id: companyId,
         },
         orderBy: {
           id: "desc",
@@ -67,6 +83,7 @@ const getAllPaymentPurchaseInvoice = async (req, res) => {
     const aggregations = await prisma.transaction.aggregate({
       where: {
         type: "purchase",
+        company_id: companyId,
       },
       _count: {
         id: true,
@@ -82,6 +99,7 @@ const getAllPaymentPurchaseInvoice = async (req, res) => {
       const allPaymentPurchaseInvoice = await prisma.transaction.findMany({
         where: {
           type: "purchase",
+          company_id: companyId,
         },
         orderBy: {
           id: "desc",

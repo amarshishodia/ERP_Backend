@@ -1,9 +1,28 @@
 const { getPagination } = require("../../../utils/query");
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const createSinglePaymentSaleInvoice = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    // Verify that the sale invoice belongs to the user's company
+    const saleInvoice = await prisma.saleInvoice.findFirst({
+      where: {
+        id: parseInt(req.body.sale_invoice_no),
+        company_id: companyId,
+      },
+    });
+
+    if (!saleInvoice) {
+      return res.status(404).json({ error: "Sale invoice not found" });
+    }
+
     // convert all incoming data to a specific format.
     const date = new Date(req.body.date).toISOString().split("T")[0];
     // received paid amount against sale invoice using a transaction
@@ -18,6 +37,7 @@ const createSinglePaymentSaleInvoice = async (req, res) => {
         related_id: parseInt(req.body.sale_invoice_no),
         payment_method: req.body.payment_method || null,
         reference_number: req.body.reference_number || null,
+        company_id: companyId,
       },
     });
     // discount given using a transaction
@@ -34,11 +54,12 @@ const createSinglePaymentSaleInvoice = async (req, res) => {
           related_id: parseInt(req.body.sale_invoice_no),
           payment_method: req.body.payment_method || null,
           reference_number: req.body.reference_number || null,
+          company_id: companyId,
         },
       });
     }
     // decrease sale invoice profit by discount value
-    const saleInvoice = await prisma.saleInvoice.update({
+    const updatedSaleInvoice = await prisma.saleInvoice.update({
       where: {
         id: parseInt(req.body.sale_invoice_no),
       },
@@ -56,11 +77,28 @@ const createSinglePaymentSaleInvoice = async (req, res) => {
 };
 
 const getAllPaymentSaleInvoice = async (req, res) => {
+  // Get company_id from logged-in user
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
   if (req.query.query === "all") {
     try {
       const allPaymentSaleInvoice = await prisma.transaction.findMany({
         where: {
-          type: "payment_sale_invoice",
+          type: "sale",
+          company_id: companyId,
+          OR: [
+            {
+              debit_id: 1,
+              credit_id: 4,
+            },
+            {
+              debit_id: 14,
+              credit_id: 4,
+            },
+          ],
         },
         orderBy: {
           id: "desc",
@@ -74,7 +112,18 @@ const getAllPaymentSaleInvoice = async (req, res) => {
   } else if (req.query.query === "info") {
     const aggregations = await prisma.transaction.aggregate({
       where: {
-        type: "payment_sale_invoice",
+        type: "sale",
+        company_id: companyId,
+        OR: [
+          {
+            debit_id: 1,
+            credit_id: 4,
+          },
+          {
+            debit_id: 14,
+            credit_id: 4,
+          },
+        ],
       },
       _count: {
         id: true,
@@ -89,7 +138,18 @@ const getAllPaymentSaleInvoice = async (req, res) => {
     try {
       const allPaymentSaleInvoice = await prisma.transaction.findMany({
         where: {
-          type: "payment_sale_invoice",
+          type: "sale",
+          company_id: companyId,
+          OR: [
+            {
+              debit_id: 1,
+              credit_id: 4,
+            },
+            {
+              debit_id: 14,
+              credit_id: 4,
+            },
+          ],
         },
         orderBy: {
           id: "desc",

@@ -1,14 +1,22 @@
+const { getCompanyId } = require("../../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 const editSingleSaleInvoice = async (req, res) => {
   try {
+    // Get company_id from logged-in user
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
     const invoiceId = Number(req.params.id);
 
     // Retrieve the existing invoice
-    const existingInvoice = await prisma.saleInvoice.findUnique({
+    const existingInvoice = await prisma.saleInvoice.findFirst({
       where: {
         id: invoiceId,
+        company_id: companyId,
       },
       include: {
         saleInvoiceProduct: {
@@ -54,12 +62,25 @@ const editSingleSaleInvoice = async (req, res) => {
     const paidAmount = parseFloat(req.body.paid_amount) || 0;
     const dueAmount = finalTotal - paidAmount;
 
+    // Verify that all products belong to the user's company
+    const productIds = req.body.saleInvoiceProduct.map(p => Number(p.product_id));
+    const products = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, company_id: true, purchase_price: true },
+    });
+
+    const invalidProducts = products.filter(p => p.company_id !== companyId);
+    if (invalidProducts.length > 0) {
+      return res.status(403).json({ error: "Some products do not belong to your company" });
+    }
+
     // get all product asynchronously
     const allProduct = await Promise.all(
       req.body.saleInvoiceProduct.map(async (item) => {
-        const product = await prisma.product.findUnique({
+        const product = await prisma.product.findFirst({
           where: {
             id: item.product_id,
+            company_id: companyId,
           },
         });
         return product;
