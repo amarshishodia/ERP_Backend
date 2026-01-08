@@ -187,7 +187,9 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
           particulars: `Account payable (due) reduced on Purchase return invoice #${createdReturnPurchaseInvoice.id} of purchase invoice #${req.body.purchaseInvoice_id}`,
           type: "purchase_return",
           related_id: Number(req.body.purchaseInvoice_id),
-          company_id: companyId,
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
     }
@@ -202,7 +204,9 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
           particulars: `Account payable (due) reduced on Purchase return invoice #${createdReturnPurchaseInvoice.id} of purchase invoice #${req.body.purchaseInvoice_id}`,
           type: "purchase_return",
           related_id: Number(req.body.purchaseInvoice_id),
-          company_id: companyId,
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
       await prisma.transaction.create({
@@ -214,7 +218,9 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
           particulars: `Cash receive on Purchase return invoice #${createdReturnPurchaseInvoice.id} of purchase invoice #${req.body.purchaseInvoice_id}`,
           type: "purchase_return",
           related_id: Number(req.body.purchaseInvoice_id),
-          company_id: companyId,
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
     }

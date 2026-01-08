@@ -59,11 +59,15 @@ const createTransactionWithSubAccounts = async (transactionData) => {
           id: sub_credit_id,
         },
       },
+      company: {
+        connect: {
+          id: company_id,
+        },
+      },
       particulars: particulars,
       amount: parseFloat(amount),
       type: type || null,
       related_id: related_id || null,
-      company_id: company_id,
     },
   });
 };

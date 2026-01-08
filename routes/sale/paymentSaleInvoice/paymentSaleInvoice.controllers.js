@@ -37,7 +37,9 @@ const createSinglePaymentSaleInvoice = async (req, res) => {
         related_id: parseInt(req.body.sale_invoice_no),
         payment_method: req.body.payment_method || null,
         reference_number: req.body.reference_number || null,
-        company_id: companyId,
+        company: {
+          connect: { id: companyId },
+        },
       },
     });
     // discount given using a transaction
@@ -54,7 +56,9 @@ const createSinglePaymentSaleInvoice = async (req, res) => {
           related_id: parseInt(req.body.sale_invoice_no),
           payment_method: req.body.payment_method || null,
           reference_number: req.body.reference_number || null,
-          company_id: companyId,
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
     }

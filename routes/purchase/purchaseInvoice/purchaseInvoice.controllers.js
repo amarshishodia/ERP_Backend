@@ -72,7 +72,9 @@ const createSinglePurchaseInvoice = async (req, res) => {
         total_product_discount: totalProductDiscount,
         round_off_enabled: req.body.round_off_enabled || false,
         round_off_amount: roundOffAmount,
-        company_id: companyId,
+        company: {
+          connect: { id: companyId },
+        },
         supplier: {
           connect: {
             id: Number(req.body.supplier_id),

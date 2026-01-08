@@ -70,7 +70,9 @@ const createSingleProduct = async (req, res) => {
           credit_id: 6,
           amount: totalPurchasePrice,
           particulars: `Initial stock of ${createdProduct.count} item/s of product`,
-          company_id: companyId,
+          company: {
+            connect: { id: companyId },
+          },
         },
       });
       res.json(createdProduct);
@@ -102,12 +104,8 @@ const createSingleProduct = async (req, res) => {
         name: req.body.name,
         author: req.body.author || null,
         company_id: companyId,
-        book_publisher: {
-          connect: { id: Number(req.body.book_publisher_id) }
-        },
-        product_currency: {
-          connect: { id: Number(req.body.product_currency_id) }
-        },
+        book_publisher_id: req.body.book_publisher_id ? Number(req.body.book_publisher_id) : null,
+        product_currency_id: req.body.product_currency_id ? Number(req.body.product_currency_id) : null,
         purchase_price: req.body.purchase_price ? parseFloat(req.body.purchase_price) : 0,
         sale_price: parseFloat(req.body.sale_price),
         imageName: file?.filename || '',
@@ -120,9 +118,7 @@ const createSingleProduct = async (req, res) => {
         : 0;
 
       if (req.body.product_category_id && !isNaN(Number(req.body.product_category_id))) {
-        productData.product_category = {
-          connect: { id: Number(req.body.product_category_id) }
-        };
+        productData.product_category_id = Number(req.body.product_category_id);
       }
 
       if (req.body.unit_measurement && !isNaN(parseFloat(req.body.unit_measurement))) {
