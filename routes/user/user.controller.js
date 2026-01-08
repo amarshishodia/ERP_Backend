@@ -8,6 +8,133 @@ const saltRounds = 10;
 const jwt = require("jsonwebtoken");
 const secret = process.env.JWT_SECRET;
 
+const signup = async (req, res) => {
+  try {
+    // Validate required fields
+    if (!req.body.company_name || !req.body.address || !req.body.company_phone || !req.body.company_email || 
+        !req.body.user_email || !req.body.user_phone || !req.body.password) {
+      return res.status(400).json({ 
+        message: "Company name, address, company phone, company email, user email, user phone, and password are required" 
+      });
+    }
+
+    // Check if user email is already taken
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        email: req.body.user_email,
+      },
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ message: "User email is already registered" });
+    }
+
+    // Check if username (user email) is already taken
+    const existingUsername = await prisma.user.findFirst({
+      where: {
+        username: req.body.user_email,
+      },
+    });
+
+    if (existingUsername) {
+      return res.status(400).json({ message: "User email is already registered as username" });
+    }
+
+    // Hash password
+    const hash = await bcrypt.hash(req.body.password, saltRounds);
+
+    // Create company and user in a transaction
+    const result = await prisma.$transaction(async (tx) => {
+      // Step 1: Create company (appSetting)
+      const company = await tx.appSetting.create({
+        data: {
+          company_name: req.body.company_name,
+          address: req.body.address,
+          phone: req.body.company_phone,
+          email: req.body.company_email,
+        },
+      });
+
+      // Step 2: Get all existing permissions (permissions are global, not company-specific)
+      const allPermissions = await tx.permission.findMany({
+        select: { id: true },
+      });
+
+      // Step 3: Create or get default "admin" role for the company
+      let adminRole = await tx.role.findFirst({
+        where: {
+          name: "admin",
+          company_id: company.id,
+        },
+      });
+
+      if (!adminRole) {
+        try {
+          adminRole = await tx.role.create({
+            data: {
+              name: "admin",
+              company_id: company.id,
+            },
+          });
+        } catch (error) {
+          // If role creation fails due to unique constraint, try to find it again
+          if (error.code === 'P2002') {
+            adminRole = await tx.role.findFirst({
+              where: {
+                name: "admin",
+                company_id: company.id,
+              },
+            });
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      // Step 4: Assign all permissions to the admin role (skip duplicates if already assigned)
+      if (allPermissions.length > 0 && adminRole) {
+        await tx.rolePermission.createMany({
+          data: allPermissions.map((permission) => ({
+            role_id: adminRole.id,
+            permission_id: permission.id,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      // Step 5: Create user with company_id
+      const user = await tx.user.create({
+        data: {
+          username: req.body.user_email, // Username set from user email
+          password: hash,
+          role: "admin", // Default role name
+          email: req.body.user_email,
+          phone: req.body.user_phone || null,
+          company_id: company.id,
+        },
+      });
+
+      return { company, user, role: adminRole };
+    });
+
+    // Return user data without password
+    const { password, ...userWithoutPassword } = result.user;
+    
+    res.status(201).json({
+      message: "Company and user registered successfully",
+      user: userWithoutPassword,
+      company: {
+        id: result.company.id,
+        company_name: result.company.company_name,
+        email: result.company.email,
+      },
+    });
+  } catch (error) {
+    console.log("Signup error:", error.message);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 const login = async (req, res) => {
   try {
     const allUser = await prisma.user.findMany();
@@ -393,6 +520,7 @@ const deleteSingleUser = async (req, res) => {
 };
 
 module.exports = {
+  signup,
   login,
   register,
   getAllUser,
