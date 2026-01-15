@@ -1,6 +1,8 @@
 const { getCompanyId } = require("../../utils/company");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
+const cacheService = require("../../utils/cache");
+const { sendPasswordResetCode } = require("../../utils/mail");
 
 const bcrypt = require("bcrypt");
 const saltRounds = 10;
@@ -55,54 +57,14 @@ const signup = async (req, res) => {
         },
       });
 
-      // Step 2: Get all existing permissions (permissions are global, not company-specific)
-      const allPermissions = await tx.permission.findMany({
-        select: { id: true },
-      });
-
-      // Step 3: Create or get default "admin" role for the company
-      let adminRole = await tx.role.findFirst({
+      // Step 2: Find existing "admin" role (use first available admin role, not company-specific)
+      const adminRole = await tx.role.findFirst({
         where: {
           name: "admin",
-          company_id: company.id,
         },
       });
 
-      if (!adminRole) {
-        try {
-          adminRole = await tx.role.create({
-            data: {
-              name: "admin",
-              company_id: company.id,
-            },
-          });
-        } catch (error) {
-          // If role creation fails due to unique constraint, try to find it again
-          if (error.code === 'P2002') {
-            adminRole = await tx.role.findFirst({
-              where: {
-                name: "admin",
-                company_id: company.id,
-              },
-            });
-          } else {
-            throw error;
-          }
-        }
-      }
-
-      // Step 4: Assign all permissions to the admin role (skip duplicates if already assigned)
-      if (allPermissions.length > 0 && adminRole) {
-        await tx.rolePermission.createMany({
-          data: allPermissions.map((permission) => ({
-            role_id: adminRole.id,
-            permission_id: permission.id,
-          })),
-          skipDuplicates: true,
-        });
-      }
-
-      // Step 5: Create user with company_id
+      // Step 3: Create user with company_id
       const user = await tx.user.create({
         data: {
           username: req.body.user_email, // Username set from user email
@@ -114,7 +76,7 @@ const signup = async (req, res) => {
         },
       });
 
-      return { company, user, role: adminRole };
+      return { company, user };
     });
 
     // Return user data without password
@@ -137,12 +99,18 @@ const signup = async (req, res) => {
 
 const login = async (req, res) => {
   try {
-    const allUser = await prisma.user.findMany();
-    const user = allUser.find(
-      (u) =>
-        u.username === req.body.username &&
-        bcrypt.compareSync(req.body.password, u.password)
-    );
+    if (!req.body.username || !req.body.password) {
+      return res.status(400).json({ message: "Username and password are required" });
+    }
+
+    // Find user by username first
+    const user = await prisma.user.findFirst({
+      where: {
+        username: req.body.username,
+      },
+    });
+
+    console.log("user found:", user ? { id: user.id, username: user.username, company_id: user.company_id } : "not found");
     
     if (!user) {
       return res
@@ -150,45 +118,41 @@ const login = async (req, res) => {
         .json({ message: "Username or password is incorrect" });
     }
 
-    // get permission from user roles using name and company_id
-    // Use findUnique with composite key if company_id exists, otherwise use findFirst
-    let permissions;
-    if (user.company_id) {
-      permissions = await prisma.role.findUnique({
-        where: {
-          name_company_id: {
-            name: user.role,
-            company_id: user.company_id,
-          },
-        },
-        include: {
-          rolePermission: {
-            include: {
-              permission: true,
-            },
-          },
-        },
-      });
-    } else {
-      // Fallback for users without company_id (shouldn't happen in production)
-      permissions = await prisma.role.findFirst({
-        where: {
-          name: user.role,
-        },
-        include: {
-          rolePermission: {
-            include: {
-              permission: true,
-            },
-          },
-        },
-      });
+    // Compare password
+    let passwordMatch = false;
+    try {
+      passwordMatch = await bcrypt.compare(req.body.password, user.password);
+    } catch (error) {
+      console.log("Password comparison error:", error.message);
+      return res
+        .status(400)
+        .json({ message: "Username or password is incorrect" });
     }
+
+    if (!passwordMatch) {
+      return res
+        .status(400)
+        .json({ message: "Username or password is incorrect" });
+    }
+
+    // get permission from user roles using name (not company-specific)
+    const permissions = await prisma.role.findFirst({
+      where: {
+        name: user.role,
+      },
+      include: {
+        rolePermission: {
+          include: {
+            permission: true,
+          },
+        },
+      },
+    });
 
     if (!permissions) {
       return res
         .status(400)
-        .json({ message: "Role not found for this company" });
+        .json({ message: "Role not found" });
     }
 
     // store all permissions name to an array
@@ -198,7 +162,7 @@ const login = async (req, res) => {
     // console.log("permissionNames", permissionNames);
     
     const token = jwt.sign(
-      { sub: user.id, permissions: permissionNames },
+      { sub: user.id, permissions: permissionNames, isRequired: false },
       secret,
       {
         expiresIn: "24h",
@@ -211,6 +175,270 @@ const login = async (req, res) => {
     });
   } catch (error) {
     res.status(500).json(error.message);
+  }
+};
+
+// Generate 6-digit code
+const generateResetCode = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+// Forgot password - send 6-digit code via email
+const forgotPassword = async (req, res) => {
+  try {
+    if (!req.body.email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    // Find user by email
+    const user = await prisma.user.findFirst({
+      where: {
+        email: req.body.email,
+      },
+    });
+
+    if (!user) {
+      // Don't reveal if user exists or not for security
+      return res.status(200).json({ 
+        message: "If the email exists, a password reset code has been sent." 
+      });
+    }
+
+    // Generate 6-digit code
+    const resetCode = generateResetCode();
+
+    // Store code in cache with 10 minutes TTL (600 seconds)
+    const cacheKey = `password_reset:${user.email}`;
+    const cacheData = {
+      code: resetCode,
+      userId: user.id,
+      email: user.email,
+      createdAt: new Date().toISOString(),
+    };
+    
+    const cacheResult = await cacheService.set(cacheKey, cacheData, 600);
+    
+    if (!cacheResult) {
+      console.warn("Cache not available, storing in memory fallback");
+      // Fallback: Store in memory if Redis is not available
+      if (!global.passwordResetCodes) {
+        global.passwordResetCodes = new Map();
+      }
+      global.passwordResetCodes.set(cacheKey, {
+        ...cacheData,
+        expiresAt: Date.now() + (600 * 1000), // 10 minutes from now
+      });
+    }
+    
+    console.log("Password reset code stored for:", user.email, "Code:", resetCode);
+
+    // Send email with code
+    const emailResult = await sendPasswordResetCode(user.email, resetCode);
+
+    if (!emailResult.success) {
+      console.error("Failed to send email:", emailResult.error);
+      return res.status(500).json({ 
+        message: "Failed to send password reset code. Please try again later." 
+      });
+    }
+
+    return res.status(200).json({ 
+      message: "Password reset code has been sent to your email." 
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Login with code - returns token with isRequired=true
+const loginWithCode = async (req, res) => {
+  try {
+    if (!req.body.email || !req.body.code) {
+      return res.status(400).json({ message: "Email and code are required" });
+    }
+
+    // Get code from cache
+    const cacheKey = `password_reset:${req.body.email}`;
+    let cachedData = await cacheService.get(cacheKey);
+
+    // Fallback to in-memory storage if Redis is not available
+    if (!cachedData && global.passwordResetCodes) {
+      const memoryData = global.passwordResetCodes.get(cacheKey);
+      if (memoryData) {
+        // Check if expired
+        if (Date.now() > memoryData.expiresAt) {
+          global.passwordResetCodes.delete(cacheKey);
+          return res.status(400).json({ 
+            message: "Invalid or expired code. Please request a new code." 
+          });
+        }
+        cachedData = {
+          code: memoryData.code,
+          userId: memoryData.userId,
+          email: memoryData.email,
+        };
+      }
+    }
+
+    if (!cachedData) {
+      console.log("No cached data found for:", req.body.email);
+      return res.status(400).json({ 
+        message: "Invalid or expired code. Please request a new code." 
+      });
+    }
+
+    console.log("Retrieved code from cache for:", req.body.email, "Expected:", cachedData.code, "Received:", req.body.code);
+
+    // Verify code
+    if (cachedData.code !== req.body.code) {
+      console.log("Code mismatch - Expected:", cachedData.code, "Received:", req.body.code);
+      return res.status(400).json({ message: "Invalid code" });
+    }
+
+    // Find user
+    const user = await prisma.user.findFirst({
+      where: {
+        id: cachedData.userId,
+        email: req.body.email,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Get permissions
+    const permissions = await prisma.role.findFirst({
+      where: {
+        name: user.role,
+      },
+      include: {
+        rolePermission: {
+          include: {
+            permission: true,
+          },
+        },
+      },
+    });
+
+    if (!permissions) {
+      return res.status(400).json({ message: "Role not found" });
+    }
+
+    const permissionNames = permissions.rolePermission.map(
+      (rp) => rp.permission.name
+    );
+
+    // Generate token with isRequired=true
+    const token = jwt.sign(
+      { sub: user.id, permissions: permissionNames, isRequired: true },
+      secret,
+      {
+        expiresIn: "1h", // Shorter expiry for password reset tokens
+      }
+    );
+
+    // Delete the code from cache after successful login
+    await cacheService.del(cacheKey);
+    // Also delete from memory fallback if exists
+    if (global.passwordResetCodes) {
+      global.passwordResetCodes.delete(cacheKey);
+    }
+
+    const { password, ...userWithoutPassword } = user;
+    return res.json({
+      ...userWithoutPassword,
+      token,
+      isRequired: true, // Flag to indicate password change is required
+    });
+  } catch (error) {
+    console.error("Login with code error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Change password - requires token with isRequired=true
+const changePassword = async (req, res) => {
+  try {
+    if (!req.body.newPassword) {
+      return res.status(400).json({ message: "New password is required" });
+    }
+
+    // Check if token has isRequired flag
+    if (!req.auth.isRequired) {
+      return res.status(403).json({ 
+        message: "This endpoint requires a password reset token. Please use forgot password flow." 
+      });
+    }
+
+    const userId = req.auth.sub;
+
+    // Hash new password
+    const hash = await bcrypt.hash(req.body.newPassword, saltRounds);
+
+    // Update user password
+    await prisma.user.update({
+      where: {
+        id: userId,
+      },
+      data: {
+        password: hash,
+      },
+    });
+
+    // Get user with permissions for new token
+    const user = await prisma.user.findUnique({
+      where: {
+        id: userId,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Get permissions
+    const permissions = await prisma.role.findFirst({
+      where: {
+        name: user.role,
+      },
+      include: {
+        rolePermission: {
+          include: {
+            permission: true,
+          },
+        },
+      },
+    });
+
+    if (!permissions) {
+      return res.status(400).json({ message: "Role not found" });
+    }
+
+    const permissionNames = permissions.rolePermission.map(
+      (rp) => rp.permission.name
+    );
+
+    // Generate new token with isRequired=false
+    const token = jwt.sign(
+      { sub: user.id, permissions: permissionNames, isRequired: false },
+      secret,
+      {
+        expiresIn: "24h",
+      }
+    );
+
+    const { password, ...userWithoutPassword } = user;
+    return res.json({
+      message: "Password changed successfully",
+      user: userWithoutPassword,
+      token,
+      isRequired: false,
+    });
+  } catch (error) {
+    console.error("Change password error:", error);
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -522,6 +750,9 @@ const deleteSingleUser = async (req, res) => {
 module.exports = {
   signup,
   login,
+  forgotPassword,
+  loginWithCode,
+  changePassword,
   register,
   getAllUser,
   getSingleUser,

@@ -5,21 +5,14 @@ const prisma = new PrismaClient();
 const { getObjectSignedUrl } = require("../../../utils/s3");
 
 const createSingleProductCurrency = async (req, res) => {
-	// Get company_id from logged-in user
-	const companyId = await getCompanyId(req.auth.sub);
-	if (!companyId) {
-		return res.status(400).json({ error: "User company_id not found" });
-	}
-
 	if (req.query.query === "deletemany") {
 		try {
-			// delete many product_currency at once (only for user's company)
+			// delete many product_currency at once (not company-specific)
 			const deletedProductCurrency = await prisma.product_currency.deleteMany({
 				where: {
 					id: {
 						in: req.body.map((id) => parseInt(id)),
 					},
-					company_id: companyId,
 				},
 			});
 			res.json(deletedProductCurrency);
@@ -29,13 +22,13 @@ const createSingleProductCurrency = async (req, res) => {
 		}
 	} else if (req.query.query === "createmany") {
 		try {
-			// create many product_currency from an array of objects with company_id
+			// create many product_currency from an array of objects (not company-specific)
 			const createdProductCurrency = await prisma.product_currency.createMany({
 				data: req.body.map((product_currency) => {
 					return {
 						name: product_currency.name,
 						symbol: product_currency.symbol,
-						company_id: companyId,
+						company_id: 1, // Use default company_id or first company
 					};
 				}),
 				skipDuplicates: true,
@@ -47,12 +40,17 @@ const createSingleProductCurrency = async (req, res) => {
 		}
 		} else {
 		try {
-			// create single product_currency from an object with company_id
+			// Get first company_id for currency (currencies are shared, not company-specific)
+			const firstCompany = await prisma.appSetting.findFirst({
+				select: { id: true },
+			});
+			
+			// create single product_currency (not company-specific)
 			const createdProductCurrency = await prisma.product_currency.create({
 				data: {
 					name: req.body.name,
 					symbol: req.body.symbol,
-					company_id: companyId,
+					company_id: firstCompany ? firstCompany.id : 1,
 					conversion: parseFloat(req.body.conversion),
 					effective_from_date: req.body.effective_from_date ? new Date(req.body.effective_from_date) : null,
 				},
@@ -66,19 +64,10 @@ const createSingleProductCurrency = async (req, res) => {
 };
 
 const getAllProductCurrency = async (req, res) => {
-	// Get company_id from logged-in user
-	const companyId = await getCompanyId(req.auth.sub);
-	if (!companyId) {
-		return res.status(400).json({ error: "User company_id not found" });
-	}
-
 	if (req.query.query === "all") {
 		try {
-			// get all product_currency for user's company
+			// get all product_currency (not company-specific)
 			const getAllProductCurrency = await prisma.product_currency.findMany({
-				where: {
-					company_id: companyId,
-				},
 				orderBy: {
 					id: "asc",
 				},
@@ -111,11 +100,8 @@ const getAllProductCurrency = async (req, res) => {
 	} else {
 		const { skip, limit } = getPagination(req.query);
 		try {
-			// get all product_currency paginated for user's company
+			// get all product_currency paginated (not company-specific)
 			const getAllProductCurrency = await prisma.product_currency.findMany({
-				where: {
-					company_id: companyId,
-				},
 				orderBy: {
 					id: "asc",
 				},
@@ -152,12 +138,6 @@ const getAllProductCurrency = async (req, res) => {
 
 const getSingleProductCurrency = async (req, res) => {
 	try {
-		// Get company_id from logged-in user
-		const companyId = await getCompanyId(req.auth.sub);
-		if (!companyId) {
-			return res.status(400).json({ error: "User company_id not found" });
-		}
-
 		const singleProductCurrency = await prisma.product_currency.findUnique({
 			where: {
 				id: parseInt(req.params.id),
@@ -169,11 +149,6 @@ const getSingleProductCurrency = async (req, res) => {
 
 		if (!singleProductCurrency) {
 			return res.status(404).json({ error: "Product currency not found" });
-		}
-
-		// Verify that the product currency belongs to the user's company
-		if (singleProductCurrency.company_id !== companyId) {
-			return res.status(403).json({ error: "Product currency does not belong to your company" });
 		}
 
 		//adding image url to product_currency
@@ -191,24 +166,12 @@ const getSingleProductCurrency = async (req, res) => {
 
 const updateSingleProductCurrency = async (req, res) => {
 	try {
-		// Get company_id from logged-in user
-		const companyId = await getCompanyId(req.auth.sub);
-		if (!companyId) {
-			return res.status(400).json({ error: "User company_id not found" });
-		}
-
-		// Verify that the product currency belongs to the user's company
 		const existingProductCurrency = await prisma.product_currency.findUnique({
 			where: { id: parseInt(req.params.id) },
-			select: { company_id: true },
 		});
 
 		if (!existingProductCurrency) {
 			return res.status(404).json({ error: "Product currency not found" });
-		}
-
-		if (existingProductCurrency.company_id !== companyId) {
-			return res.status(403).json({ error: "Product currency does not belong to your company" });
 		}
 
 		const updateData = {
@@ -241,24 +204,12 @@ const updateSingleProductCurrency = async (req, res) => {
 
 const deleteSingleProductCurrency = async (req, res) => {
 	try {
-		// Get company_id from logged-in user
-		const companyId = await getCompanyId(req.auth.sub);
-		if (!companyId) {
-			return res.status(400).json({ error: "User company_id not found" });
-		}
-
-		// Verify that the product currency belongs to the user's company
 		const existingProductCurrency = await prisma.product_currency.findUnique({
 			where: { id: parseInt(req.params.id) },
-			select: { company_id: true },
 		});
 
 		if (!existingProductCurrency) {
 			return res.status(404).json({ error: "Product currency not found" });
-		}
-
-		if (existingProductCurrency.company_id !== companyId) {
-			return res.status(403).json({ error: "Product currency does not belong to your company" });
 		}
 
 		const deletedProductCurrency = await prisma.product_currency.delete({
@@ -276,26 +227,14 @@ const deleteSingleProductCurrency = async (req, res) => {
 // Currency Rate Controllers
 const getCurrencyRates = async (req, res) => {
 	try {
-		// Get company_id from logged-in user
-		const companyId = await getCompanyId(req.auth.sub);
-		if (!companyId) {
-			return res.status(400).json({ error: "User company_id not found" });
-		}
-
 		const currencyId = parseInt(req.params.id);
 		
-		// Verify that the product currency belongs to the user's company
 		const currency = await prisma.product_currency.findUnique({
 			where: { id: currencyId },
-			select: { company_id: true },
 		});
 
 		if (!currency) {
 			return res.status(404).json({ error: "Product currency not found" });
-		}
-
-		if (currency.company_id !== companyId) {
-			return res.status(403).json({ error: "Product currency does not belong to your company" });
 		}
 
 		const rates = await prisma.product_currency_rate.findMany({
@@ -315,26 +254,14 @@ const getCurrencyRates = async (req, res) => {
 
 const addCurrencyRate = async (req, res) => {
 	try {
-		// Get company_id from logged-in user
-		const companyId = await getCompanyId(req.auth.sub);
-		if (!companyId) {
-			return res.status(400).json({ error: "User company_id not found" });
-		}
-
 		const currencyId = parseInt(req.params.id);
 		
-		// Verify that the product currency belongs to the user's company
 		const currency = await prisma.product_currency.findUnique({
 			where: { id: currencyId },
-			select: { company_id: true },
 		});
 
 		if (!currency) {
 			return res.status(404).json({ error: "Product currency not found" });
-		}
-
-		if (currency.company_id !== companyId) {
-			return res.status(403).json({ error: "Product currency does not belong to your company" });
 		}
 
 		const { conversion, effective_from_date } = req.body;
@@ -366,30 +293,15 @@ const addCurrencyRate = async (req, res) => {
 
 const deleteCurrencyRate = async (req, res) => {
 	try {
-		// Get company_id from logged-in user
-		const companyId = await getCompanyId(req.auth.sub);
-		if (!companyId) {
-			return res.status(400).json({ error: "User company_id not found" });
-		}
-
 		const rateId = parseInt(req.params.rateId);
 		
-		// Get the rate and verify the currency belongs to the user's company
+		// Get the rate
 		const rate = await prisma.product_currency_rate.findUnique({
 			where: { id: rateId },
-			include: {
-				product_currency: {
-					select: { company_id: true },
-				},
-			},
 		});
 
 		if (!rate) {
 			return res.status(404).json({ error: "Currency rate not found" });
-		}
-
-		if (rate.product_currency.company_id !== companyId) {
-			return res.status(403).json({ error: "Currency rate does not belong to your company" });
 		}
 
 		const deletedRate = await prisma.product_currency_rate.delete({
