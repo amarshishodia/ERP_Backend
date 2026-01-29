@@ -22,16 +22,15 @@ const createSingleReturnSaleInvoice = async (req, res) => {
     return res.status(404).json({ error: "Sale invoice not found" });
   }
 
-  // Verify that all products belong to the user's company
+  // Verify that all products exist (products are now master)
   const productIds = req.body.returnSaleInvoiceProduct.map(p => Number(p.product_id));
   const products = await prisma.product.findMany({
     where: { id: { in: productIds } },
-    select: { id: true, company_id: true, purchase_price: true },
+    select: { id: true, purchase_price: true },
   });
 
-  const invalidProducts = products.filter(p => p.company_id !== companyId);
-  if (invalidProducts.length > 0) {
-    return res.status(403).json({ error: "Some products do not belong to your company" });
+  if (products.length !== productIds.length) {
+    return res.status(404).json({ error: "Some products not found" });
   }
 
   // calculate total sale price
@@ -43,10 +42,9 @@ const createSingleReturnSaleInvoice = async (req, res) => {
   // get all product asynchronously
   const allProduct = await Promise.all(
     req.body.returnSaleInvoiceProduct.map(async (item) => {
-      const product = await prisma.product.findFirst({
+      const product = await prisma.product.findUnique({
         where: {
           id: item.product_id,
-          company_id: companyId,
         },
       });
       return product;
@@ -305,19 +303,26 @@ const createSingleReturnSaleInvoice = async (req, res) => {
         },
       },
     });
-    // iterate through all products of this return sale invoice and increase the product quantity,
-    req.body.returnSaleInvoiceProduct.forEach(async (item) => {
-      await prisma.product.update({
+    // iterate through all products of this return sale invoice and increase product_stock
+    for (const item of req.body.returnSaleInvoiceProduct) {
+      const productId = Number(item.product_id);
+      const quantity = Number(item.product_quantity);
+      
+      // Update product_stock for this company
+      await prisma.product_stock.update({
         where: {
-          id: Number(item.product_id),
+          product_id_company_id: {
+            product_id: productId,
+            company_id: companyId,
+          },
         },
         data: {
           quantity: {
-            increment: Number(item.product_quantity),
+            increment: quantity,
           },
         },
       });
-    });
+    }
     // decrease sale invoice profit by return sale invoice's calculated profit profit
     const returnSaleInvoiceProfit = totalSalePrice - totalPurchasePrice;
     await prisma.saleInvoice.update({
@@ -619,11 +624,14 @@ const deleteSingleReturnSaleInvoice = async (req, res) => {
     if (!returnSaleInvoice) {
       return res.status(404).json({ error: "Return sale invoice not found" });
     }
-    // product quantity decrease
-    returnSaleInvoice.returnSaleInvoiceProduct.forEach(async (item) => {
-      await prisma.product.update({
+    // product_stock quantity decrease (reversing the return)
+    for (const item of returnSaleInvoice.returnSaleInvoiceProduct) {
+      await prisma.product_stock.update({
         where: {
-          id: Number(item.product_id),
+          product_id_company_id: {
+            product_id: Number(item.product_id),
+            company_id: companyId,
+          },
         },
         data: {
           quantity: {
@@ -631,7 +639,7 @@ const deleteSingleReturnSaleInvoice = async (req, res) => {
           },
         },
       });
-    });
+    }
     // all operations in one transaction
     const [deleteSaleInvoice, customer, transaction] =
       await prisma.$transaction([

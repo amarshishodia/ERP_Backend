@@ -25,16 +25,15 @@ const createSinglePurchaseInvoice = async (req, res) => {
     return res.status(403).json({ error: "Supplier does not belong to your company" });
   }
 
-  // Verify that all products belong to the user's company
+  // Verify that all products exist (products are now master, no company check needed)
   const productIds = req.body.purchaseInvoiceProduct.map(p => Number(p.product_id));
   const products = await prisma.product.findMany({
     where: { id: { in: productIds } },
-    select: { id: true, company_id: true },
+    select: { id: true },
   });
 
-  const invalidProducts = products.filter(p => p.company_id !== companyId);
-  if (invalidProducts.length > 0) {
-    return res.status(403).json({ error: "Some products do not belong to your company" });
+  if (products.length !== productIds.length) {
+    return res.status(404).json({ error: "Some products not found" });
   }
 
   // calculate total purchase price with product-level discounts
@@ -123,9 +122,9 @@ const createSinglePurchaseInvoice = async (req, res) => {
         company_id: companyId,
       });
     }
-    // iterate through all products of this purchase invoice and add product quantity, update product purchase price to database
+    // iterate through all products of this purchase invoice and update product_stock, create purchase history
     // Calculate effective purchase price considering both product discount and bill discount
-    req.body.purchaseInvoiceProduct.forEach(async (item) => {
+    for (const item of req.body.purchaseInvoiceProduct) {
       // Calculate price after product-level discount
       const itemTotal = parseFloat(item.product_purchase_price) * parseFloat(item.product_quantity);
       const itemProductDiscount = (itemTotal * parseFloat(item.product_purchase_discount || 0)) / 100;
@@ -141,23 +140,53 @@ const createSinglePurchaseInvoice = async (req, res) => {
       const effectiveTotalPrice = itemPriceAfterProductDiscount - billDiscountAllocation;
       const effectivePricePerUnit = effectiveTotalPrice / parseFloat(item.product_quantity);
       
+      const productId = Number(item.product_id);
+      const quantity = Number(item.product_quantity);
+      
+      // Update product purchase price (master product)
       await prisma.product.update({
-        where: {
-          id: Number(item.product_id),
-        },
+        where: { id: productId },
         data: {
-          quantity: {
-            increment: Number(item.product_quantity),
-          },
-          purchase_price: {
-            set: parseFloat(effectivePricePerUnit.toFixed(2)),
-          },
-          // product_discount: {
-          //   set: parseFloat(item.product_discount),
-          // },
+          purchase_price: parseFloat(effectivePricePerUnit.toFixed(2)),
         },
       });
-    }),
+      
+      // Update product_stock for this company
+      await prisma.product_stock.upsert({
+        where: {
+          product_id_company_id: {
+            product_id: productId,
+            company_id: companyId,
+          },
+        },
+        update: {
+          quantity: {
+            increment: quantity,
+          },
+        },
+        create: {
+          product_id: productId,
+          company_id: companyId,
+          quantity: quantity,
+        },
+      });
+      
+      // Create purchase history entry
+      await prisma.product_purchase_history.create({
+        data: {
+          product_id: productId,
+          company_id: companyId,
+          purchase_invoice_id: createdInvoice.id,
+          supplier_id: Number(req.body.supplier_id),
+          quantity: quantity,
+          purchase_price: parseFloat(item.product_purchase_price),
+          discount: parseFloat(item.product_purchase_discount || 0),
+          total_amount: effectiveTotalPrice,
+          purchase_date: new Date(date),
+          note: req.body.note || null,
+        },
+      });
+    }
       res.json({
         createdInvoice,
       });

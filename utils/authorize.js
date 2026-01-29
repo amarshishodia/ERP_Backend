@@ -13,6 +13,12 @@ function authorize(permission) {
       // print permission of the requesting user
       // console.log("req.auth.permissions", req.auth.permissions);
       // console.log("permission", permission);
+      
+      // Check if user is super admin - super admins bypass permission checks
+      if (req.auth.isSuperAdmin || req.auth.permissions?.includes("superAdmin")) {
+        return next();
+      }
+      
       // If permission is provided, check if user has it
       if (permission && permission.length > 0 && !req.auth.permissions.includes(permission)) {
         // user's permissions is not authorized

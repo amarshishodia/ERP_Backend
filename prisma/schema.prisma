@@ -25,6 +25,7 @@ model user {
   blood_group    String?
   image          String?
   status         Boolean       @default(true)
+  is_super_admin Boolean       @default(false)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   saleInvoice      saleInvoice[]
@@ -32,6 +33,7 @@ model user {
   challanInvoice   challanInvoice[]
   designation      designation?        @relation(fields: [designation_id], references: [id])
   company          appSetting?          @relation(fields: [company_id], references: [id])
+  product_sale_histories product_sale_history[]
 
   @@index([designation_id], map: "user_designation_id_fkey")
   @@index([company_id])
@@ -53,16 +55,14 @@ model designation {
 model product {
   id                           Int                            @id @default(autoincrement())
   name                         String?
-  isbn                         String
+  isbn                         String                         @unique
   author                       String?
-  quantity                     Int
   purchase_price               Float?
   sale_price                   Float
   imageName                    String?
   product_category_id          Int?
   product_currency_id          Int?
   book_publisher_id            Int?
-  company_id                   Int
   unit_measurement             Float?
   unit_type                    String?
   reorder_quantity             Int?
@@ -71,17 +71,22 @@ model product {
   updated_at                   DateTime                       @updatedAt
   sku                          String?                        @db.Text
   book_publisher               book_publisher?                @relation(fields: [book_publisher_id], references: [id])
-  product_category             product_category?              @relation(fields: [product_category_id], references: [id])
+  product_category             product_category?              @relation("ProductPrimaryCategory", fields: [product_category_id], references: [id])
   product_currency             product_currency?              @relation(fields: [product_currency_id], references: [id])
-  company                      appSetting                    @relation(fields: [company_id], references: [id])
+  product_categories           product_product_category[]
   purchaseInvoiceProduct       purchaseInvoiceProduct[]
   returnPurchaseInvoiceProduct returnPurchaseInvoiceProduct[]
   returnSaleInvoiceProduct     returnSaleInvoiceProduct[]
   saleInvoiceProduct           saleInvoiceProduct[]
   quotationInvoiceProduct      quotationInvoiceProduct[]
   challanInvoiceProduct        challanInvoiceProduct[]
+  product_stock                product_stock[]
+  product_purchase_history     product_purchase_history[]
+  product_sale_history         product_sale_history[]
+  ecommerce_wishlist           ecommerce_wishlist[]
+  ecommerce_cart               ecommerce_cart[]
+  ecommerce_order_items        ecommerce_order_item[]
 
-  @@unique([isbn, company_id])
   @@index([book_publisher_id], map: "product_book_publisher_id_fkey")
   @@index([product_category_id], map: "product_product_category_id_fkey")
   @@index([product_currency_id], map: "product_product_currency_id_fkey")
@@ -90,7 +95,6 @@ model product {
   @@index([isbn], map: "product_isbn_idx")
   @@index([sku(length: 100)], map: "product_sku_idx")
   @@index([status], map: "product_status_idx")
-  @@index([company_id])
 }
 
 model product_category {
@@ -99,11 +103,25 @@ model product_category {
   company_id Int
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
-  product   product[]
+  product   product[] @relation("ProductPrimaryCategory")
+  products  product_product_category[]
   company   appSetting @relation(fields: [company_id], references: [id])
 
   @@unique([name, company_id])
   @@index([company_id])
+}
+
+model product_product_category {
+  id                  Int              @id @default(autoincrement())
+  product_id          Int
+  product_category_id Int
+  created_at          DateTime         @default(now())
+  product             product           @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_category    product_category  @relation(fields: [product_category_id], references: [id], onDelete: Cascade)
+
+  @@unique([product_id, product_category_id])
+  @@index([product_id])
+  @@index([product_category_id])
 }
 
 model book_publisher {
@@ -114,6 +132,7 @@ model book_publisher {
   updatedAt DateTime  @updatedAt
   product   product[]
   company   appSetting @relation(fields: [company_id], references: [id])
+  discounts discount_master[]
 
   @@unique([name, company_id])
   @@index([name], map: "book_publisher_name_idx")
@@ -162,6 +181,8 @@ model supplier {
   updated_at      DateTime          @updatedAt
   purchaseInvoice purchaseInvoice[]
   company         appSetting        @relation(fields: [company_id], references: [id])
+  product_purchase_histories product_purchase_history[]
+  purchase_discounts discount_master[]
 
   @@unique([phone, company_id])
   @@index([company_id])
@@ -187,6 +208,7 @@ model purchaseInvoice {
   company                appSetting               @relation(fields: [company_id], references: [id])
   returnPurchaseInvoice  returnPurchaseInvoice[]
   purchaseInvoiceProduct purchaseInvoiceProduct[]
+  product_purchase_histories product_purchase_history[]
 
   @@index([supplier_id], map: "purchaseInvoice_supplier_id_fkey")
   @@index([company_id])
@@ -221,6 +243,11 @@ model customer {
   saleInvoice        saleInvoice[]
   quotationInvoice   quotationInvoice[]
   challanInvoice     challanInvoice[]
+  product_sale_histories product_sale_history[]
+  sale_discounts     discount_master[]
+  ecommerce_wishlist ecommerce_wishlist[]
+  ecommerce_cart     ecommerce_cart[]
+  ecommerce_orders   ecommerce_order[]
 
   @@unique([phone, company_id])
 }
@@ -252,6 +279,7 @@ model saleInvoice {
   company                appSetting           @relation(fields: [company_id], references: [id])
   saleInvoiceProduct     saleInvoiceProduct[]
   returnSaleInvoice      returnSaleInvoice[]
+  product_sale_histories product_sale_history[]
 
   @@index([customer_id], map: "saleInvoice_customer_id_fkey")
   @@index([user_id], map: "saleInvoice_user_id_fkey")
@@ -545,13 +573,13 @@ model appSetting {
   sale_invoice_terms  String? @db.LongText
   quotation_terms     String? @db.LongText
   challan_terms       String? @db.LongText
+  status             Boolean  @default(true)
   users              user[]
   accounts           account[]
   transactions       transaction[]
   designations       designation[]
   roles              role[]
   book_publishers    book_publisher[]
-  products           product[]
   product_categories product_category[]
   product_currencies product_currency[]
   suppliers          supplier[]
@@ -562,6 +590,11 @@ model appSetting {
   saleInvoices       saleInvoice[]
   quotationInvoices  quotationInvoice[]
   returnSaleInvoices returnSaleInvoice[]
+  product_stocks     product_stock[]
+  product_purchase_histories product_purchase_history[]
+  product_sale_histories     product_sale_history[]
+  discount_masters   discount_master[]
+  ecommerce_orders  ecommerce_order[]
 }
 
 model firm {
@@ -590,4 +623,209 @@ model prefix {
 
   @@index([firm_id], map: "prefix_firm_id_fkey")
   @@index([module_id], map: "prefix_module_id_fkey")
+}
+
+model product_stock {
+  id                Int       @id @default(autoincrement())
+  product_id        Int
+  company_id        Int
+  quantity          Int       @default(0)
+  reorder_quantity  Int?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+  product           product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  company           appSetting @relation(fields: [company_id], references: [id], onDelete: Cascade)
+
+  @@unique([product_id, company_id])
+  @@index([product_id])
+  @@index([company_id])
+}
+
+model product_purchase_history {
+  id                    Int       @id @default(autoincrement())
+  product_id            Int
+  company_id            Int
+  purchase_invoice_id   Int?
+  supplier_id           Int?
+  quantity              Int
+  purchase_price        Float
+  discount              Float?    @default(0)
+  total_amount          Float
+  purchase_date         DateTime
+  note                  String?
+  created_at            DateTime  @default(now())
+  updated_at            DateTime  @updatedAt
+  product               product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  company               appSetting @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  purchaseInvoice       purchaseInvoice? @relation(fields: [purchase_invoice_id], references: [id], onDelete: SetNull)
+  supplier              supplier? @relation(fields: [supplier_id], references: [id], onDelete: SetNull)
+
+  @@index([product_id])
+  @@index([company_id])
+  @@index([purchase_invoice_id])
+  @@index([supplier_id])
+  @@index([purchase_date])
+}
+
+model product_sale_history {
+  id                  Int       @id @default(autoincrement())
+  product_id          Int
+  company_id          Int
+  sale_invoice_id     Int?
+  customer_id         Int?
+  user_id             Int?
+  quantity            Int
+  sale_price          Float
+  discount            Float?    @default(0)
+  total_amount        Float
+  profit              Float?
+  sale_date           DateTime
+  note                String?
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
+  product             product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  company             appSetting @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  saleInvoice         saleInvoice? @relation(fields: [sale_invoice_id], references: [id], onDelete: SetNull)
+  customer            customer? @relation(fields: [customer_id], references: [id], onDelete: SetNull)
+  user                user?     @relation(fields: [user_id], references: [id], onDelete: SetNull)
+
+  @@index([product_id])
+  @@index([company_id])
+  @@index([sale_invoice_id])
+  @@index([customer_id])
+  @@index([user_id])
+  @@index([sale_date])
+}
+
+model discount_master {
+  id                  Int       @id @default(autoincrement())
+  company_id          Int
+  discount_type       String    // "sale" or "purchase"
+  publisher_id        Int       // book_publisher_id (required)
+  customer_id         Int?      // customer_id (required for sale discounts)
+  supplier_id         Int?      // supplier_id (required for purchase discounts)
+  discount_value      Float     // Discount amount (percentage or fixed)
+  discount_unit       String    // "percentage" or "fixed"
+  status              Boolean   @default(true)
+  effective_from      DateTime?
+  effective_to        DateTime?
+  description         String?   @db.Text
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
+  company             appSetting @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  publisher           book_publisher @relation(fields: [publisher_id], references: [id], onDelete: Cascade)
+  customer            customer? @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  supplier            supplier? @relation(fields: [supplier_id], references: [id], onDelete: Cascade)
+
+  @@index([company_id])
+  @@index([discount_type])
+  @@index([publisher_id])
+  @@index([customer_id])
+  @@index([supplier_id])
+  @@index([status])
+  @@index([effective_from])
+  @@index([effective_to])
+}
+
+model ecommerce_banner {
+  id          Int       @id @default(autoincrement())
+  title       String?
+  description String?   @db.Text
+  image_url   String
+  link_url    String?
+  position    String    @default("homepage") // homepage, category, etc.
+  order       Int       @default(0)
+  status      Boolean   @default(true)
+  start_date  DateTime?
+  end_date    DateTime?
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  @@index([status])
+  @@index([position])
+  @@index([order])
+}
+
+model ecommerce_wishlist {
+  id          Int       @id @default(autoincrement())
+  product_id  Int
+  customer_id Int?      // Optional - can be null for guest users
+  session_id  String?   // For guest users
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+  product     product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  customer    customer? @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+
+  @@unique([product_id, customer_id])
+  @@unique([product_id, session_id])
+  @@index([product_id])
+  @@index([customer_id])
+  @@index([session_id])
+}
+
+model ecommerce_cart {
+  id          Int       @id @default(autoincrement())
+  product_id  Int
+  quantity    Int       @default(1)
+  customer_id Int?      // Optional - can be null for guest users
+  session_id  String?   // For guest users
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+  product     product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  customer    customer? @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+
+  @@unique([product_id, customer_id])
+  @@unique([product_id, session_id])
+  @@index([product_id])
+  @@index([customer_id])
+  @@index([session_id])
+}
+
+model ecommerce_order {
+  id                  Int       @id @default(autoincrement())
+  order_number        String    @unique
+  customer_id         Int?      // Optional for guest checkout
+  customer_name       String    // Required for order
+  customer_phone      String    // Required for order
+  customer_email      String?
+  customer_address    String    // Required for order
+  company_id          Int?      // Company/client from which products were purchased
+  total_amount        Float
+  discount            Float     @default(0)
+  paid_amount         Float     @default(0)
+  due_amount          Float
+  status              String    @default("pending") // pending, confirmed, processing, shipped, delivered, cancelled
+  payment_status      String    @default("pending") // pending, paid, partial, refunded
+  payment_method      String?
+  shipping_address    String?
+  note                String?   @db.Text
+  session_id          String?   // For guest orders
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
+  customer            customer? @relation(fields: [customer_id], references: [id], onDelete: SetNull)
+  company             appSetting? @relation(fields: [company_id], references: [id], onDelete: SetNull)
+  order_items         ecommerce_order_item[]
+
+  @@index([customer_id])
+  @@index([company_id])
+  @@index([order_number])
+  @@index([status])
+  @@index([session_id])
+}
+
+model ecommerce_order_item {
+  id                  Int       @id @default(autoincrement())
+  order_id            Int
+  product_id          Int
+  quantity            Int
+  sale_price          Float
+  discount            Float     @default(0)
+  total_amount        Float
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
+  order               ecommerce_order @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  product             product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@index([order_id])
+  @@index([product_id])
 }

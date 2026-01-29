@@ -224,19 +224,26 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
         },
       });
     }
-    // iterate through all products of this return purchase invoice and less the product quantity,
-    req.body.returnPurchaseInvoiceProduct.forEach(async (item) => {
-      await prisma.product.update({
+    // iterate through all products of this return purchase invoice and decrease product_stock
+    for (const item of req.body.returnPurchaseInvoiceProduct) {
+      const productId = Number(item.product_id);
+      const quantity = Number(item.product_quantity);
+      
+      // Update product_stock for this company
+      await prisma.product_stock.update({
         where: {
-          id: Number(item.product_id),
+          product_id_company_id: {
+            product_id: productId,
+            company_id: companyId,
+          },
         },
         data: {
           quantity: {
-            decrement: Number(item.product_quantity),
+            decrement: quantity,
           },
         },
       });
-    }),
+    }
       res.json({
         createdReturnPurchaseInvoice,
       });
@@ -523,19 +530,22 @@ const deleteSingleReturnPurchaseInvoice = async (req, res) => {
     if (returnPurchaseInvoice.company_id !== companyId) {
       return res.status(403).json({ error: "Return purchase invoice does not belong to your company" });
     }
-    // product quantity decrease
-    returnPurchaseInvoice.returnPurchaseInvoiceProduct.forEach(async (item) => {
-      await prisma.product.update({
+    // product_stock quantity increase (reversing the return)
+    for (const item of returnPurchaseInvoice.returnPurchaseInvoiceProduct) {
+      await prisma.product_stock.update({
         where: {
-          id: Number(item.product_id),
+          product_id_company_id: {
+            product_id: Number(item.product_id),
+            company_id: companyId,
+          },
         },
         data: {
           quantity: {
-            decrement: Number(item.product_quantity),
+            increment: Number(item.product_quantity),
           },
         },
       });
-    });
+    }
     // all operations in one transaction
     const [deletePurchaseInvoice, supplier, transaction] =
       await prisma.$transaction([

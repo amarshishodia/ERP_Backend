@@ -112,6 +112,10 @@ const permissions = [
   "viewProductCurrency",
   "updateProductCurrency",
   "deleteProductCurrency",
+  "createDiscountMaster",
+  "viewDiscountMaster",
+  "updateDiscountMaster",
+  "deleteDiscountMaster",
 ];
 
 const roles = ["admin", "staff"];

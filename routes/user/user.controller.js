@@ -178,6 +178,67 @@ const login = async (req, res) => {
   }
 };
 
+// Super admin login
+const superAdminLogin = async (req, res) => {
+  try {
+    if (!req.body.username || !req.body.password) {
+      return res.status(400).json({ message: "Username and password are required" });
+    }
+
+    // Find user by username
+    const user = await prisma.user.findFirst({
+      where: {
+        username: req.body.username,
+        is_super_admin: true, // Only allow super admin users
+      },
+    });
+
+    if (!user) {
+      return res
+        .status(400)
+        .json({ message: "Username or password is incorrect" });
+    }
+
+    // Compare password
+    let passwordMatch = false;
+    try {
+      passwordMatch = await bcrypt.compare(req.body.password, user.password);
+    } catch (error) {
+      console.log("Password comparison error:", error.message);
+      return res
+        .status(400)
+        .json({ message: "Username or password is incorrect" });
+    }
+
+    if (!passwordMatch) {
+      return res
+        .status(400)
+        .json({ message: "Username or password is incorrect" });
+    }
+
+    // Super admin gets all permissions - we'll use a special permission array
+    const allPermissions = ["superAdmin"]; // Special permission for super admin
+    
+    const token = jwt.sign(
+      { sub: user.id, permissions: allPermissions, isSuperAdmin: true, isRequired: false },
+      secret,
+      {
+        expiresIn: "24h",
+      }
+    );
+    
+    const { password, ...userWithoutPassword } = user;
+    return res.json({
+      ...userWithoutPassword,
+      token,
+      isSuperAdmin: true,
+    });
+  } catch (error) {
+    console.error("Super admin login error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // Generate 6-digit code
 const generateResetCode = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -750,6 +811,7 @@ const deleteSingleUser = async (req, res) => {
 module.exports = {
   signup,
   login,
+  superAdminLogin,
   forgotPassword,
   loginWithCode,
   changePassword,

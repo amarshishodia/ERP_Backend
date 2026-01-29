@@ -18,13 +18,12 @@ const createSingleProduct = async (req, res) => {
 
   if (req.query.query === "deletemany") {
     try {
-      // delete many product at once (only for user's company)
+      // delete many product at once (products are now master, but we can still delete by ID)
       const deletedProduct = await prisma.product.deleteMany({
         where: {
           id: {
             in: req.body.map((id) => Number(id)),
           },
-          company_id: companyId,
         },
       });
       res.json(deletedProduct);
@@ -38,30 +37,93 @@ const createSingleProduct = async (req, res) => {
       const totalPurchasePrice = req.body.reduce((acc, cur) => {
         return acc + cur.quantity * cur.purchase_price;
       }, 0);
-      // convert incoming data to specific format with company_id
+      // convert incoming data to specific format (products are now master, no company_id)
       const data = req.body.map((item) => {
-        return {
+        const productData = {
           name: item.name,
-          quantity: parseInt(item.quantity),
           purchase_price: parseFloat(item.purchase_price),
           sale_price: parseFloat(item.sale_price),
-          product_category_id: parseInt(item.product_category_id),
           sku: item.sku,
           unit_measurement: parseFloat(item.unit_measurement),
           unit_type: item.unit_type,
-          reorder_quantity: parseInt(item.reorder_quantity),
           isbn: item.isbn,
           author: item.author,
           product_currency_id: parseInt(item.product_currency_id),
           book_publisher_id: parseInt(item.book_publisher_id),
-          company_id: companyId,
         };
+        
+        // Handle single or multiple categories
+        if (item.product_category_id) {
+          productData.product_category_id = parseInt(item.product_category_id);
+        }
+        
+        return productData;
       });
       // create many product from an array of object
       const createdProduct = await prisma.product.createMany({
         data: data,
         skipDuplicates: true,
       });
+      
+      // After creating products, add categories if provided
+      for (const item of req.body) {
+        if (item.product_category_ids && Array.isArray(item.product_category_ids)) {
+          const product = await prisma.product.findUnique({
+            where: { isbn: item.isbn }
+          });
+          if (product) {
+            const categoryIds = item.product_category_ids
+              .map(id => Number(id))
+              .filter(id => !isNaN(id) && id > 0);
+            if (categoryIds.length > 0) {
+              await prisma.product_product_category.createMany({
+                data: categoryIds.map(categoryId => ({
+                  product_id: product.id,
+                  product_category_id: categoryId
+                })),
+                skipDuplicates: true
+              });
+            }
+          }
+        } else if (item.product_category_id) {
+          const product = await prisma.product.findUnique({
+            where: { isbn: item.isbn }
+          });
+          if (product) {
+            const categoryId = Number(item.product_category_id);
+            if (!isNaN(categoryId) && categoryId > 0) {
+              await prisma.product_product_category.create({
+                data: {
+                  product_id: product.id,
+                  product_category_id: categoryId
+                }
+              }).catch(() => {}); // Ignore if already exists
+            }
+          }
+        }
+      }
+      
+      // Create product_stock entries for each created product
+      const stockData = [];
+      for (const item of req.body) {
+        const product = await prisma.product.findUnique({
+          where: { isbn: item.isbn }
+        });
+        if (product) {
+          stockData.push({
+            product_id: product.id,
+            company_id: companyId,
+            quantity: parseInt(item.quantity) || 0,
+            reorder_quantity: parseInt(item.reorder_quantity) || null,
+          });
+        }
+      }
+      if (stockData.length > 0) {
+        await prisma.product_stock.createMany({
+          data: stockData,
+          skipDuplicates: true,
+        });
+      }
       // stock product's account transaction create with company_id
       await prisma.transaction.create({
         data: {
@@ -84,11 +146,10 @@ const createSingleProduct = async (req, res) => {
     try {
       // create one product from an object
 
-      // Check if ISBN is already taken for this company
-      const existingProduct = await prisma.product.findFirst({
+      // Check if ISBN is already taken (ISBN is now globally unique)
+      const existingProduct = await prisma.product.findUnique({
         where: {
           isbn: req.body.isbn,
-          company_id: companyId,
         },
       });
 
@@ -98,12 +159,11 @@ const createSingleProduct = async (req, res) => {
 
       const file = req.file;
 
-      // Prepare data object with proper handling of optional fields
+      // Prepare data object with proper handling of optional fields (no company_id, no quantity)
       const productData = {
         isbn: req.body.isbn,
         name: req.body.name,
         author: req.body.author || null,
-        company_id: companyId,
         book_publisher_id: req.body.book_publisher_id ? Number(req.body.book_publisher_id) : null,
         product_currency_id: req.body.product_currency_id ? Number(req.body.product_currency_id) : null,
         purchase_price: req.body.purchase_price ? parseFloat(req.body.purchase_price) : 0,
@@ -111,34 +171,95 @@ const createSingleProduct = async (req, res) => {
         imageName: file?.filename || '',
         unit_type: req.body.unit_type,
       };
-
-      // Set quantity - use provided value or default to 0
-      productData.quantity = req.body.quantity && !isNaN(parseInt(req.body.quantity)) 
+      
+      // Get quantity for stock entry
+      const quantity = req.body.quantity && !isNaN(parseInt(req.body.quantity)) 
         ? parseInt(req.body.quantity) 
         : 0;
 
-      if (req.body.product_category_id && !isNaN(Number(req.body.product_category_id))) {
-        productData.product_category_id = Number(req.body.product_category_id);
+      // Handle single category (backward compatibility) or multiple categories
+      let categoryIds = [];
+      if (req.body.product_category_ids) {
+        // Try to parse as JSON string first, then as array
+        let parsedIds = req.body.product_category_ids;
+        if (typeof parsedIds === 'string') {
+          try {
+            parsedIds = JSON.parse(parsedIds);
+          } catch (e) {
+            // If not JSON, treat as single value
+            parsedIds = [parsedIds];
+          }
+        }
+        if (Array.isArray(parsedIds)) {
+          categoryIds = parsedIds
+            .map(id => Number(id))
+            .filter(id => !isNaN(id) && id > 0);
+        } else if (!isNaN(Number(parsedIds))) {
+          categoryIds = [Number(parsedIds)].filter(id => id > 0);
+        }
+      } else if (req.body.product_category_id && !isNaN(Number(req.body.product_category_id))) {
+        // Single category (backward compatibility)
+        const singleCategoryId = Number(req.body.product_category_id);
+        if (singleCategoryId > 0) {
+          categoryIds = [singleCategoryId];
+          productData.product_category_id = singleCategoryId; // Keep for backward compatibility
+        }
       }
 
       if (req.body.unit_measurement && !isNaN(parseFloat(req.body.unit_measurement))) {
         productData.unit_measurement = parseFloat(req.body.unit_measurement);
       }
 
+      // Create product with categories
       const createdProduct = await prisma.product.create({
-        data: productData,
+        data: {
+          ...productData,
+          product_categories: categoryIds.length > 0 ? {
+            create: categoryIds.map(categoryId => ({
+              product_category_id: categoryId
+            }))
+          } : undefined
+        },
+        include: {
+          product_categories: {
+            include: {
+              product_category: {
+                select: {
+                  id: true,
+                  name: true
+                }
+              }
+            }
+          }
+        }
       });
       file?.filename?
       createdProduct.imageUrl = `${HOST}:${PORT}/v1/product-image/${file.filename}`:'';
 
-const subAcc = await prisma.subAccount.findUnique({ where: { id: 6 } });
-console.log("Credit subAccount:", subAcc);
-
+      // Create product_stock entry for this company
+      const purchasePrice = req.body.purchase_price && !isNaN(parseFloat(req.body.purchase_price)) ? parseFloat(req.body.purchase_price) : 0;
+      const reorderQty = req.body.reorder_quantity && !isNaN(parseInt(req.body.reorder_quantity)) ? parseInt(req.body.reorder_quantity) : null;
+      
+      await prisma.product_stock.upsert({
+        where: {
+          product_id_company_id: {
+            product_id: createdProduct.id,
+            company_id: companyId,
+          },
+        },
+        update: {
+          quantity: quantity,
+          reorder_quantity: reorderQty,
+        },
+        create: {
+          product_id: createdProduct.id,
+          company_id: companyId,
+          quantity: quantity,
+          reorder_quantity: reorderQty,
+        },
+      });
 
       // stock product's account transaction create (only if quantity > 0 and purchase_price > 0)
-      const quantity = req.body.quantity && !isNaN(parseInt(req.body.quantity)) ? parseInt(req.body.quantity) : 0;
-      const purchasePrice = req.body.purchase_price && !isNaN(parseFloat(req.body.purchase_price)) ? parseFloat(req.body.purchase_price) : 0;
-      
       if (quantity > 0 && purchasePrice > 0) {
         await createTransactionWithSubAccounts({
           date: new Date(),
@@ -174,31 +295,41 @@ const getAllProduct = async (req, res) => {
       const page = parseInt(req.query.page) || 1;
       const limit = parseInt(req.query.limit) || 50; // Default to 50 instead of all
       const status = req.query.status !== "false";
+      const viewMode = req.query.view_mode || "stock"; // "all" for all master products, "stock" for company stock only
 
-      // Try to get from cache first (cache key should include company_id)
-      const cacheKey = `products:${companyId}:${status}:${page}:${limit}`;
+      // Try to get from cache first (cache key should include company_id and view_mode)
+      const cacheKey = `products:${companyId}:${status}:${page}:${limit}:${viewMode}`;
       const cachedData = await cacheService.getProducts(page, limit, status);
       
-      if (cachedData) {
+      if (cachedData && viewMode === "stock") {
         console.log('Products served from cache');
         return res.json(cachedData);
       }
 
       const skip = (page - 1) * limit;
 
-      // Get total count for pagination
+      // Build where condition based on view_mode
+      let whereCondition = {
+        status: status,
+      };
+
+      // If view_mode is "stock", filter by products that have stock for this company
+      if (viewMode === "stock") {
+        const productIdsWithStock = await prisma.product_stock.findMany({
+          where: { company_id: companyId },
+          select: { product_id: true },
+        });
+        const productIds = productIdsWithStock.map(p => p.product_id);
+        whereCondition.id = productIds.length > 0 ? { in: productIds } : { in: [] };
+      }
+      // If view_mode is "all", show all master products (no filter)
+      
       const totalCount = await prisma.product.count({
-        where: {
-          status: status,
-          company_id: companyId,
-        }
+        where: whereCondition
       });
 
       const allProduct = await prisma.product.findMany({
-        where: {
-          status: status,
-          company_id: companyId,
-        },
+        where: whereCondition,
         orderBy: {
           id: "desc",
         },
@@ -206,6 +337,16 @@ const getAllProduct = async (req, res) => {
           product_category: {
             select: {
               name: true,
+            },
+          },
+          product_categories: {
+            include: {
+              product_category: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
             },
           },
           product_currency: {
@@ -221,16 +362,31 @@ const getAllProduct = async (req, res) => {
               name: true,
             },
           },
+          product_stock: {
+            where: { company_id: companyId },
+            select: {
+              quantity: true,
+              reorder_quantity: true,
+            },
+          },
         },
         skip: skip,
         take: limit,
       });
 
-      // Optimize image URL generation
-      const productsWithImages = allProduct.map(product => ({
-        ...product,
-        imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null
-      }));
+      // Optimize image URL generation and add quantity from stock
+      const productsWithImages = allProduct.map(product => {
+        const stock = product.product_stock && product.product_stock.length > 0 ? product.product_stock[0] : null;
+        // Transform categories array to include all categories
+        const categories = product.product_categories?.map(pc => pc.product_category) || [];
+        return {
+          ...product,
+          categories: categories, // Add categories array
+          quantity: stock ? stock.quantity : 0,
+          reorder_quantity: stock ? stock.reorder_quantity : null,
+          imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null
+        };
+      });
 
       const responseData = {
         data: productsWithImages,
@@ -244,8 +400,10 @@ const getAllProduct = async (req, res) => {
         }
       };
 
-      // Cache the response
-      await cacheService.setProducts(page, limit, status, responseData, 300); // 5 minutes cache
+      // Cache the response (only for stock view mode)
+      if (viewMode === "stock") {
+        await cacheService.setProducts(page, limit, status, responseData, 300); // 5 minutes cache
+      }
 
       res.json(responseData);
     } catch (error) {
@@ -300,8 +458,19 @@ const getAllProduct = async (req, res) => {
           },
         ],
         status: true,
-        company_id: companyId,
-      } : { status: true, company_id: companyId };
+      } : { status: true };
+      
+      // Filter by products that have stock for this company
+      const productIdsWithStock = await prisma.product_stock.findMany({
+        where: { company_id: companyId },
+        select: { product_id: true },
+      });
+      const productIds = productIdsWithStock.map(p => p.product_id);
+      if (productIds.length > 0) {
+        searchConditions.id = { in: productIds };
+      } else {
+        searchConditions.id = { in: [] };
+      }
 
       // Get total count for pagination
       const totalCount = await prisma.product.count({
@@ -330,6 +499,13 @@ const getAllProduct = async (req, res) => {
           book_publisher: {
             select: {
               name: true,
+            },
+          },
+          product_stock: {
+            where: { company_id: companyId },
+            select: {
+              quantity: true,
+              reorder_quantity: true,
             },
           },
         },
@@ -387,10 +563,14 @@ const getAllProduct = async (req, res) => {
       }
 
       // Optimize image URL generation
-      const productsWithImages = allProduct.map(product => ({
-        ...product,
-        imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null
-      }));
+      const productsWithImages = allProduct.map(product => {
+        const categories = product.product_categories?.map(pc => pc.product_category) || [];
+        return {
+          ...product,
+          categories: categories, // Add categories array
+          imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null
+        };
+      });
 
       const responseData = {
         data: productsWithImages,
@@ -413,43 +593,51 @@ const getAllProduct = async (req, res) => {
       console.log(error.message);
     }
   } else if (req.query.query === "info") {
-    const aggregations = await prisma.product.aggregate({
-      _count: {
-        id: true,
-      },
-      _sum: {
-        quantity: true,
-      },
-      where: {
-        status: true,
-        company_id: companyId,
+    // Get products with stock for this company
+    const productStocks = await prisma.product_stock.findMany({
+      where: { company_id: companyId },
+      include: {
+        product: true,
       },
     });
-    // get all product and calculate all purchase price and sale price
-    const allProduct = await prisma.product.findMany({
-      where: {
-        company_id: companyId,
-      },
+    
+    // Filter to only include products with status: true
+    const productsWithStock = productStocks.filter(ps => ps.product && ps.product.status === true);
+    const totalCount = productsWithStock.length;
+    const totalQuantity = productsWithStock.reduce((sum, ps) => sum + ps.quantity, 0);
+    
+    const totalPurchasePrice = productsWithStock.reduce((acc, ps) => {
+      return acc + (ps.quantity * (ps.product.purchase_price || 0));
+    }, 0);
+    const totalSalePrice = productsWithStock.reduce((acc, ps) => {
+      return acc + (ps.quantity * (ps.product.sale_price || 0));
+    }, 0);
+    
+    res.json({ 
+      _count: { id: totalCount },
+      _sum: { quantity: totalQuantity },
+      totalPurchasePrice, 
+      totalSalePrice 
     });
-    const totalPurchasePrice = allProduct.reduce((acc, cur) => {
-      return acc + cur.quantity * cur.purchase_price;
-    }, 0);
-    const totalSalePrice = allProduct.reduce((acc, cur) => {
-      return acc + cur.quantity * cur.sale_price;
-    }, 0);
-    res.json({ ...aggregations, totalPurchasePrice, totalSalePrice });
   } else if (req.query.status === "false") {
     console.log("false")
 
     try {
       const { skip, limit } = getPagination(req.query);
+      // Get product IDs with stock for this company
+      const productIdsWithStock = await prisma.product_stock.findMany({
+        where: { company_id: companyId },
+        select: { product_id: true },
+      });
+      const productIds = productIdsWithStock.map(p => p.product_id);
+      
       const allProduct = await prisma.product.findMany({
         orderBy: {
           id: "desc",
         },
         where: {
           status: false,
-          company_id: companyId,
+          id: productIds.length > 0 ? { in: productIds } : { in: [] },
         },
         include: {
           product_category: {
@@ -457,8 +645,6 @@ const getAllProduct = async (req, res) => {
               name: true,
             },
           },
-        },
-        include: {
           product_currency: {
             select: {
               id: true,
@@ -467,22 +653,29 @@ const getAllProduct = async (req, res) => {
               conversion: true,
             },
           },
-        },
-        include: {
           book_publisher: {
             select: {
               name: true,
+            },
+          },
+          product_stock: {
+            where: { company_id: companyId },
+            select: {
+              quantity: true,
+              reorder_quantity: true,
             },
           },
         },
         skip: Number(skip),
         take: Number(limit),
       });
-      // attach signed url to each product
+      // attach signed url to each product and add quantity from stock
       for (let product of allProduct) {
         if (product.imageName) {
           product.imageUrl = `${HOST}:${PORT}/v1/product-image/${product.imageName}`;
         }
+        product.quantity = product.product_stock && product.product_stock.length > 0 ? product.product_stock[0].quantity : 0;
+        product.reorder_quantity = product.product_stock && product.product_stock.length > 0 ? product.product_stock[0].reorder_quantity : null;
       }
       res.json(allProduct);
     } catch (error) {
@@ -493,13 +686,20 @@ const getAllProduct = async (req, res) => {
     // Default paginated endpoint
     const { skip, limit } = getPagination(req.query);
     try {
+      // Get product IDs with stock for this company
+      const productIdsWithStock = await prisma.product_stock.findMany({
+        where: { company_id: companyId },
+        select: { product_id: true },
+      });
+      const productIds = productIdsWithStock.map(p => p.product_id);
+      
       const allProduct = await prisma.product.findMany({
         orderBy: {
           id: "desc",
         },
         where: {
           status: true,
-          company_id: companyId,
+          id: productIds.length > 0 ? { in: productIds } : { in: [] },
         },
         include: {
           product_category: {
@@ -520,16 +720,29 @@ const getAllProduct = async (req, res) => {
               conversion: true,
             },
           },
+          product_stock: {
+            where: { company_id: companyId },
+            select: {
+              quantity: true,
+              reorder_quantity: true,
+            },
+          },
         },
         skip: Number(skip),
         take: Number(limit),
       });
 
-      // Optimize image URL generation
-      const productsWithImages = allProduct.map(product => ({
-        ...product,
-        imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null
-      }));
+      // Optimize image URL generation and add quantity from stock
+      const productsWithImages = allProduct.map(product => {
+        const categories = product.product_categories?.map(pc => pc.product_category) || [];
+        return {
+          ...product,
+          categories: categories, // Add categories array
+          quantity: product.product_stock && product.product_stock.length > 0 ? product.product_stock[0].quantity : 0,
+          reorder_quantity: product.product_stock && product.product_stock.length > 0 ? product.product_stock[0].reorder_quantity : null,
+          imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null
+        };
+      });
 
       res.json(productsWithImages);
     } catch (error) {
@@ -551,16 +764,56 @@ const getSingleProduct = async (req, res) => {
       where: {
         id: Number(req.params.id),
       },
+      include: {
+        product_category: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        product_categories: {
+          include: {
+            product_category: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
+        product_stock: {
+          where: { company_id: companyId },
+          select: {
+            quantity: true,
+            reorder_quantity: true,
+          },
+        },
+      },
     });
 
     if (!singleProduct) {
       return res.status(404).json({ error: "Product not found" });
     }
 
-    // Verify that the product belongs to the user's company
-    if (singleProduct.company_id !== companyId) {
-      return res.status(403).json({ error: "Product does not belong to your company" });
+    // Check if product has stock for this company (optional check)
+    if (singleProduct.product_stock.length === 0) {
+      // Product exists but no stock entry - create one with 0 quantity
+      await prisma.product_stock.create({
+        data: {
+          product_id: singleProduct.id,
+          company_id: companyId,
+          quantity: 0,
+        },
+      });
+      singleProduct.product_stock = [{ quantity: 0, reorder_quantity: null }];
     }
+    
+    // Add quantity from stock
+    singleProduct.quantity = singleProduct.product_stock[0].quantity;
+    singleProduct.reorder_quantity = singleProduct.product_stock[0].reorder_quantity;
+    
+    // Add categories array
+    singleProduct.categories = singleProduct.product_categories?.map(pc => pc.product_category) || [];
 
     if (singleProduct && singleProduct.imageName) {
       singleProduct.imageUrl = `${HOST}:${PORT}/v1/product-image/${singleProduct.imageName}`;
@@ -580,18 +833,13 @@ const updateSingleProduct = async (req, res) => {
       return res.status(400).json({ error: "User company_id not found" });
     }
 
-    // Verify that the product belongs to the user's company
+    // Verify that the product exists
     const existingProduct = await prisma.product.findUnique({
       where: { id: Number(req.params.id) },
-      select: { company_id: true },
     });
 
     if (!existingProduct) {
       return res.status(404).json({ error: "Product not found" });
-    }
-
-    if (existingProduct.company_id !== companyId) {
-      return res.status(403).json({ error: "Product does not belong to your company" });
     }
 
     const file = req.file;
@@ -600,19 +848,67 @@ const updateSingleProduct = async (req, res) => {
       name: req.body.name,
       author: req.body.author,
       book_publisher_id: Number(req.body.book_publisher_id),
-      quantity: parseInt(req.body.quantity),
       product_currency_id: Number(req.body.product_currency_id),
       purchase_price: parseFloat(req.body.purchase_price),
       sale_price: parseFloat(req.body.sale_price),
-      product_category_id: Number(req.body.product_category_id),
       unit_measurement: parseFloat(req.body.unit_measurement),
       unit_type: req.body.unit_type,
-      reorder_quantity: parseInt(req.body.reorder_quantity),
     };
+    
+    // Handle single category (backward compatibility) or multiple categories
+    let categoryIds = [];
+    if (req.body.product_category_ids) {
+      // Try to parse as JSON string first, then as array
+      let parsedIds = req.body.product_category_ids;
+      if (typeof parsedIds === 'string') {
+        try {
+          parsedIds = JSON.parse(parsedIds);
+        } catch (e) {
+          // If not JSON, treat as single value
+          parsedIds = [parsedIds];
+        }
+      }
+      if (Array.isArray(parsedIds)) {
+        categoryIds = parsedIds
+          .map(id => Number(id))
+          .filter(id => !isNaN(id) && id > 0);
+      } else if (!isNaN(Number(parsedIds))) {
+        categoryIds = [Number(parsedIds)].filter(id => id > 0);
+      }
+    } else if (req.body.product_category_id && !isNaN(Number(req.body.product_category_id))) {
+      // Single category (backward compatibility)
+      const singleCategoryId = Number(req.body.product_category_id);
+      if (singleCategoryId > 0) {
+        categoryIds = [singleCategoryId];
+        updateData.product_category_id = singleCategoryId; // Keep for backward compatibility
+      }
+    }
+    
+    // Handle quantity and reorder_quantity in product_stock
+    const quantity = parseInt(req.body.quantity) || 0;
+    const reorderQuantity = req.body.reorder_quantity ? parseInt(req.body.reorder_quantity) : null;
 
     // Only update image if a new file is provided
     if (file?.filename) {
       updateData.imageName = file.filename;
+    }
+
+    // Update product categories
+    if (categoryIds.length > 0) {
+      // Delete existing categories and create new ones
+      await prisma.product_product_category.deleteMany({
+        where: { product_id: Number(req.params.id) }
+      });
+      updateData.product_categories = {
+        create: categoryIds.map(categoryId => ({
+          product_category_id: categoryId
+        }))
+      };
+    } else {
+      // If no categories provided, delete all existing categories
+      await prisma.product_product_category.deleteMany({
+        where: { product_id: Number(req.params.id) }
+      });
     }
 
     const updatedProduct = await prisma.product.update({
@@ -620,12 +916,65 @@ const updateSingleProduct = async (req, res) => {
         id: Number(req.params.id),
       },
       data: updateData,
+      include: {
+        product_category: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        product_categories: {
+          include: {
+            product_category: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    
+    // Update product_stock for this company
+    await prisma.product_stock.upsert({
+      where: {
+        product_id_company_id: {
+          product_id: updatedProduct.id,
+          company_id: companyId,
+        },
+      },
+      update: {
+        quantity: quantity,
+        reorder_quantity: reorderQuantity,
+      },
+      create: {
+        product_id: updatedProduct.id,
+        company_id: companyId,
+        quantity: quantity,
+        reorder_quantity: reorderQuantity,
+      },
     });
 
     // Add image URL if image exists
     if (updatedProduct.imageName) {
       updatedProduct.imageUrl = `${HOST}:${PORT}/v1/product-image/${updatedProduct.imageName}`;
     }
+    
+    // Add quantity from stock
+    const stock = await prisma.product_stock.findUnique({
+      where: {
+        product_id_company_id: {
+          product_id: updatedProduct.id,
+          company_id: companyId,
+        },
+      },
+    });
+    updatedProduct.quantity = stock ? stock.quantity : 0;
+    updatedProduct.reorder_quantity = stock ? stock.reorder_quantity : null;
+    
+    // Add categories array
+    updatedProduct.categories = updatedProduct.product_categories?.map(pc => pc.product_category) || [];
 
     // Invalidate product cache when product is updated
     await cacheService.invalidateProductCache();
@@ -645,18 +994,13 @@ const deleteSingleProduct = async (req, res) => {
       return res.status(400).json({ error: "User company_id not found" });
     }
 
-    // Verify that the product belongs to the user's company
+    // Verify that the product exists
     const existingProduct = await prisma.product.findUnique({
       where: { id: Number(req.params.id) },
-      select: { company_id: true },
     });
 
     if (!existingProduct) {
       return res.status(404).json({ error: "Product not found" });
-    }
-
-    if (existingProduct.company_id !== companyId) {
-      return res.status(403).json({ error: "Product does not belong to your company" });
     }
 
     const deletedProduct = await prisma.product.update({

@@ -43,8 +43,8 @@ const createSingleSaleInvoice = async (req, res) => {
       const productData = item.product_data;
       
       // Check if product already exists by ISBN (in case of race condition)
-      let existingProduct = await prisma.product.findFirst({
-        where: { isbn: productData.isbn, company_id: companyId }
+      let existingProduct = await prisma.product.findUnique({
+        where: { isbn: productData.isbn }
       });
       
       if (existingProduct) {
@@ -67,17 +67,15 @@ const createSingleSaleInvoice = async (req, res) => {
         publisherId = publisher.id;
       }
       
-      // Prepare product data
+      // Prepare product data (no company_id, no quantity)
       const newProductData = {
         isbn: productData.isbn,
         name: productData.name || "",
         author: productData.author || null,
         sale_price: parseFloat(productData.sale_price) || 0,
         purchase_price: parseFloat(productData.purchase_price) || 0,
-        quantity: parseInt(productData.quantity) || 0,
         unit_measurement: parseFloat(productData.unit_measurement) || 0,
         unit_type: productData.unit_type || "",
-        company_id: companyId,
       };
       
       // Connect currency (required field)
@@ -106,10 +104,26 @@ const createSingleSaleInvoice = async (req, res) => {
         data: newProductData
       });
       
+      // Create product_stock entry with 0 quantity (will be updated when sold)
+      await prisma.product_stock.upsert({
+        where: {
+          product_id_company_id: {
+            product_id: createdProduct.id,
+            company_id: companyId,
+          },
+        },
+        update: {},
+        create: {
+          product_id: createdProduct.id,
+          company_id: companyId,
+          quantity: 0,
+        },
+      });
+      
       productIdMap.set(productData.isbn, createdProduct.id);
     }
     
-    // Step 2: Verify products with product_id belong to the company
+    // Step 2: Verify products with product_id exist (products are now master)
     const productIds = req.body.saleInvoiceProduct
       .filter(item => item.product_id)
       .map(item => Number(item.product_id));
@@ -117,12 +131,11 @@ const createSingleSaleInvoice = async (req, res) => {
     if (productIds.length > 0) {
       const products = await prisma.product.findMany({
         where: { id: { in: productIds } },
-        select: { id: true, company_id: true },
+        select: { id: true },
       });
 
-      const invalidProducts = products.filter(p => p.company_id !== companyId);
-      if (invalidProducts.length > 0) {
-        return res.status(403).json({ error: "Some products do not belong to your company" });
+      if (products.length !== productIds.length) {
+        return res.status(404).json({ error: "Some products not found" });
       }
     }
 
@@ -170,10 +183,9 @@ const createSingleSaleInvoice = async (req, res) => {
     // Step 5: Get all products for purchase price calculation
     const allProduct = await Promise.all(
       processedProducts.map(async (item) => {
-        const product = await prisma.product.findFirst({
+        const product = await prisma.product.findUnique({
           where: {
             id: item.final_product_id,
-            company_id: companyId,
           },
         });
         return product;
@@ -282,19 +294,57 @@ const createSingleSaleInvoice = async (req, res) => {
       related_id: createdInvoice.id,
       company_id: companyId,
     });
-    // iterate through all products of this sale invoice and decrease product quantity
-    processedProducts.forEach(async (item) => {
-      await prisma.product.update({
+    // iterate through all products of this sale invoice and decrease product_stock, create sale history
+    for (const item of processedProducts) {
+      const productId = item.final_product_id;
+      const quantity = Number(item.product_quantity);
+      const salePrice = parseFloat(item.product_sale_price);
+      const discount = parseFloat(item.product_sale_discount || 0);
+      const conversion = parseFloat(item.product_sale_conversion || 1);
+      const totalAmount = salePrice * quantity * conversion * (1 - discount / 100);
+      
+      // Get product purchase price for profit calculation
+      const product = await prisma.product.findUnique({
+        where: { id: productId },
+        select: { purchase_price: true },
+      });
+      
+      const purchasePrice = product?.purchase_price || 0;
+      const profit = (salePrice * conversion - purchasePrice) * quantity * (1 - discount / 100);
+      
+      // Update product_stock for this company
+      await prisma.product_stock.update({
         where: {
-          id: item.final_product_id,
+          product_id_company_id: {
+            product_id: productId,
+            company_id: companyId,
+          },
         },
         data: {
           quantity: {
-            decrement: Number(item.product_quantity),
+            decrement: quantity,
           },
         },
       });
-    }),
+      
+      // Create sale history entry
+      await prisma.product_sale_history.create({
+        data: {
+          product_id: productId,
+          company_id: companyId,
+          sale_invoice_id: createdInvoice.id,
+          customer_id: Number(req.body.customer_id),
+          user_id: Number(req.body.user_id),
+          quantity: quantity,
+          sale_price: salePrice,
+          discount: discount,
+          total_amount: totalAmount,
+          profit: profit,
+          sale_date: new Date(date),
+          note: req.body.note || null,
+        },
+      });
+    }
       res.json({
         createdInvoice,
       });

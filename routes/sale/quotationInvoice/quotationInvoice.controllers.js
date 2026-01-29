@@ -42,8 +42,8 @@ const createSingleQuotation = async (req, res) => {
       const productData = item.product_data;
       
       // Check if product already exists by ISBN (in case of race condition)
-      let existingProduct = await prisma.product.findFirst({
-        where: { isbn: productData.isbn, company_id: companyId }
+      let existingProduct = await prisma.product.findUnique({
+        where: { isbn: productData.isbn }
       });
       
       if (existingProduct) {
@@ -66,17 +66,15 @@ const createSingleQuotation = async (req, res) => {
         publisherId = publisher.id;
       }
       
-      // Prepare product data
+      // Prepare product data (no company_id, no quantity)
       const newProductData = {
         isbn: productData.isbn,
         name: productData.name || "",
         author: productData.author || null,
         sale_price: parseFloat(productData.sale_price) || 0,
         purchase_price: parseFloat(productData.purchase_price) || 0,
-        quantity: parseInt(productData.quantity) || 0,
         unit_measurement: parseFloat(productData.unit_measurement) || 0,
         unit_type: productData.unit_type || "",
-        company_id: companyId,
       };
       
       // Connect currency (required field)
@@ -105,10 +103,26 @@ const createSingleQuotation = async (req, res) => {
         data: newProductData
       });
       
+      // Create product_stock entry with 0 quantity
+      await prisma.product_stock.upsert({
+        where: {
+          product_id_company_id: {
+            product_id: createdProduct.id,
+            company_id: companyId,
+          },
+        },
+        update: {},
+        create: {
+          product_id: createdProduct.id,
+          company_id: companyId,
+          quantity: 0,
+        },
+      });
+      
       productIdMap.set(productData.isbn, createdProduct.id);
     }
     
-    // Step 2: Verify products with product_id belong to the company
+    // Step 2: Verify products with product_id exist (products are now master)
     const productIds = req.body.saleInvoiceProduct
       .filter(item => item.product_id)
       .map(item => Number(item.product_id));
@@ -116,12 +130,11 @@ const createSingleQuotation = async (req, res) => {
     if (productIds.length > 0) {
       const products = await prisma.product.findMany({
         where: { id: { in: productIds } },
-        select: { id: true, company_id: true },
+        select: { id: true },
       });
 
-      const invalidProducts = products.filter(p => p.company_id !== companyId);
-      if (invalidProducts.length > 0) {
-        return res.status(403).json({ error: "Some products do not belong to your company" });
+      if (products.length !== productIds.length) {
+        return res.status(404).json({ error: "Some products not found" });
       }
     }
 
@@ -381,7 +394,7 @@ const convertQuotationToSale = async (req, res) => {
     const allProduct = await Promise.all(
       saleProducts.map(async (item) => {
         return await prisma.product.findFirst({
-          where: { id: item.product_id, company_id: companyId },
+          where: { id: item.product_id },
         });
       })
     );
@@ -585,8 +598,8 @@ const updateSingleQuotation = async (req, res) => {
       
       const productData = item.product_data;
       
-      let existingProduct = await prisma.product.findFirst({
-        where: { isbn: productData.isbn, company_id: companyId }
+      let existingProduct = await prisma.product.findUnique({
+        where: { isbn: productData.isbn }
       });
       
       if (existingProduct) {
@@ -614,10 +627,8 @@ const updateSingleQuotation = async (req, res) => {
         author: productData.author || null,
         sale_price: parseFloat(productData.sale_price) || 0,
         purchase_price: parseFloat(productData.purchase_price) || 0,
-        quantity: parseInt(productData.quantity) || 0,
         unit_measurement: parseFloat(productData.unit_measurement) || 0,
         unit_type: productData.unit_type || "",
-        company_id: companyId,
       };
       
       if (productData.product_currency_id) {
@@ -642,10 +653,26 @@ const updateSingleQuotation = async (req, res) => {
         data: newProductData
       });
       
+      // Create product_stock entry
+      await prisma.product_stock.upsert({
+        where: {
+          product_id_company_id: {
+            product_id: createdProduct.id,
+            company_id: companyId,
+          },
+        },
+        update: {},
+        create: {
+          product_id: createdProduct.id,
+          company_id: companyId,
+          quantity: 0,
+        },
+      });
+      
       updateProductIdMap.set(productData.isbn, createdProduct.id);
     }
     
-    // Step 2: Verify products with product_id belong to the company
+    // Step 2: Verify products with product_id exist (products are now master)
     const updateProductIds = req.body.saleInvoiceProduct
       .filter(item => item.product_id)
       .map(item => Number(item.product_id));
@@ -653,12 +680,11 @@ const updateSingleQuotation = async (req, res) => {
     if (updateProductIds.length > 0) {
       const updateProducts = await prisma.product.findMany({
         where: { id: { in: updateProductIds } },
-        select: { id: true, company_id: true },
+        select: { id: true },
       });
 
-      const invalidUpdateProducts = updateProducts.filter(p => p.company_id !== companyId);
-      if (invalidUpdateProducts.length > 0) {
-        return res.status(403).json({ error: "Some products do not belong to your company" });
+      if (updateProducts.length !== updateProductIds.length) {
+        return res.status(404).json({ error: "Some products not found" });
       }
     }
 

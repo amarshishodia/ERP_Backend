@@ -62,25 +62,23 @@ const editSingleSaleInvoice = async (req, res) => {
     const paidAmount = parseFloat(req.body.paid_amount) || 0;
     const dueAmount = finalTotal - paidAmount;
 
-    // Verify that all products belong to the user's company
+    // Verify that all products exist (products are now master)
     const productIds = req.body.saleInvoiceProduct.map(p => Number(p.product_id));
     const products = await prisma.product.findMany({
       where: { id: { in: productIds } },
-      select: { id: true, company_id: true, purchase_price: true },
+      select: { id: true, purchase_price: true },
     });
 
-    const invalidProducts = products.filter(p => p.company_id !== companyId);
-    if (invalidProducts.length > 0) {
-      return res.status(403).json({ error: "Some products do not belong to your company" });
+    if (products.length !== productIds.length) {
+      return res.status(404).json({ error: "Some products not found" });
     }
 
     // get all product asynchronously
     const allProduct = await Promise.all(
       req.body.saleInvoiceProduct.map(async (item) => {
-        const product = await prisma.product.findFirst({
+        const product = await prisma.product.findUnique({
           where: {
             id: item.product_id,
-            company_id: companyId,
           },
         });
         return product;

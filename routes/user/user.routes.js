@@ -3,6 +3,7 @@ const express = require("express");
 const {
   signup,
   login,
+  superAdminLogin,
   forgotPassword,
   loginWithCode,
   changePassword,
@@ -16,6 +17,7 @@ const userRoutes = express.Router();
 
 userRoutes.post("/signup", signup); // public route - company and user registration
 userRoutes.post("/login", login); // public route
+userRoutes.post("/super-admin/login", superAdminLogin); // public route - super admin login
 userRoutes.post("/forgot-password", forgotPassword); // public route - send reset code
 userRoutes.post("/login-with-code", loginWithCode); // public route - login with code
 userRoutes.post("/change-password", authorize(), changePassword); // requires authentication with isRequired=true
