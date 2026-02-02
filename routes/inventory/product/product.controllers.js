@@ -159,11 +159,17 @@ const createSingleProduct = async (req, res) => {
 
       const file = req.file;
 
-      // Prepare data object with proper handling of optional fields (no company_id, no quantity)
+      // Get quantity for product and product_stock (DB has NOT NULL on product.quantity)
+      const quantity = req.body.quantity != null && req.body.quantity !== '' && !isNaN(parseInt(req.body.quantity))
+        ? parseInt(req.body.quantity, 10)
+        : 0;
+
+      // Prepare data object with proper handling of optional fields
       const productData = {
         isbn: req.body.isbn,
         name: req.body.name,
         author: req.body.author || null,
+        quantity,
         book_publisher_id: req.body.book_publisher_id ? Number(req.body.book_publisher_id) : null,
         product_currency_id: req.body.product_currency_id ? Number(req.body.product_currency_id) : null,
         purchase_price: req.body.purchase_price ? parseFloat(req.body.purchase_price) : 0,
@@ -171,11 +177,6 @@ const createSingleProduct = async (req, res) => {
         imageName: file?.filename || '',
         unit_type: req.body.unit_type,
       };
-      
-      // Get quantity for stock entry
-      const quantity = req.body.quantity && !isNaN(parseInt(req.body.quantity)) 
-        ? parseInt(req.body.quantity) 
-        : 0;
 
       // Handle single category (backward compatibility) or multiple categories
       let categoryIds = [];
@@ -258,6 +259,41 @@ const createSingleProduct = async (req, res) => {
           reorder_quantity: reorderQty,
         },
       });
+
+      // Create stock entries (multiple per product) if provided
+      let stockEntries = [];
+      if (req.body.stock_entries) {
+        try {
+          const parsed = typeof req.body.stock_entries === 'string'
+            ? JSON.parse(req.body.stock_entries)
+            : req.body.stock_entries;
+          stockEntries = Array.isArray(parsed) ? parsed : [];
+        } catch (e) {
+          console.log('Failed to parse stock_entries:', e.message);
+        }
+      }
+      if (stockEntries.length > 0) {
+        const stockData = stockEntries
+          .filter(
+            (e) =>
+              e.locationId != null &&
+              e.quantity != null &&
+              !isNaN(Number(e.quantity)) &&
+              Number(e.quantity) >= 0
+          )
+          .map((e) => ({
+            product_id: createdProduct.id,
+            company_id: companyId,
+            location_id: Number(e.locationId),
+            transaction_date: e.transactionDate ? new Date(e.transactionDate) : new Date(),
+            purchase_price: parseFloat(e.purchasePrice) || 0,
+            quantity: parseInt(e.quantity, 10) || 0,
+            status: e.status !== false,
+          }));
+        if (stockData.length > 0) {
+          await prisma.stock.createMany({ data: stockData });
+        }
+      }
 
       // stock product's account transaction create (only if quantity > 0 and purchase_price > 0)
       if (quantity > 0 && purchasePrice > 0) {
@@ -788,6 +824,15 @@ const getSingleProduct = async (req, res) => {
             reorder_quantity: true,
           },
         },
+        stock_entries: {
+          where: { company_id: companyId },
+          include: {
+            location: {
+              select: { id: true, name: true },
+            },
+          },
+          orderBy: { id: 'asc' },
+        },
       },
     });
 
@@ -955,6 +1000,47 @@ const updateSingleProduct = async (req, res) => {
         reorder_quantity: reorderQuantity,
       },
     });
+
+    // Replace stock entries (multiple per product) if provided
+    let stockEntries = [];
+    if (req.body.stock_entries) {
+      try {
+        const parsed = typeof req.body.stock_entries === 'string'
+          ? JSON.parse(req.body.stock_entries)
+          : req.body.stock_entries;
+        stockEntries = Array.isArray(parsed) ? parsed : [];
+      } catch (e) {
+        console.log('Failed to parse stock_entries:', e.message);
+      }
+    }
+    if (stockEntries.length >= 0) {
+      const productId = Number(req.params.id);
+      await prisma.stock.deleteMany({
+        where: { product_id: productId, company_id: companyId },
+      });
+      if (stockEntries.length > 0) {
+        const stockData = stockEntries
+          .filter(
+            (e) =>
+              e.locationId != null &&
+              e.quantity != null &&
+              !isNaN(Number(e.quantity)) &&
+              Number(e.quantity) >= 0
+          )
+          .map((e) => ({
+            product_id: productId,
+            company_id: companyId,
+            location_id: Number(e.locationId),
+            transaction_date: e.transactionDate ? new Date(e.transactionDate) : new Date(),
+            purchase_price: parseFloat(e.purchasePrice) || 0,
+            quantity: parseInt(e.quantity, 10) || 0,
+            status: e.status !== false,
+          }));
+        if (stockData.length > 0) {
+          await prisma.stock.createMany({ data: stockData });
+        }
+      }
+    }
 
     // Add image URL if image exists
     if (updatedProduct.imageName) {

@@ -2,10 +2,123 @@ const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 const { v4: uuidv4 } = require("uuid");
 const path = require("path");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
 const HOST = process.env.HOST || "http://localhost";
 const PORT = process.env.PORT || 5001;
+const JWT_SECRET = process.env.JWT_SECRET || "ecommerce-secret-key";
+const SALT_ROUNDS = 10;
+
+// Optional auth: set req.ecommerceUser = { id } when valid Bearer token, else null
+const optionalEcommerceAuth = (req, res, next) => {
+  req.ecommerceUser = null;
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.slice(7);
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      if (decoded && decoded.sub) req.ecommerceUser = { id: decoded.sub };
+    } catch (_) {}
+  }
+  next();
+};
+
+// ----- E-commerce Auth (no company_id) -----
+
+const ecommerceSignup = async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ message: "Username and password are required" });
+    }
+
+    const existingUsername = await prisma.user.findFirst({
+      where: { username: username.trim() },
+    });
+    if (existingUsername) {
+      return res.status(400).json({ message: "Username is already taken" });
+    }
+
+    if (email) {
+      const existingEmail = await prisma.user.findFirst({
+        where: { email: email.trim() },
+      });
+      if (existingEmail) {
+        return res.status(400).json({ message: "Email is already registered" });
+      }
+    }
+
+    const hash = await bcrypt.hash(password, SALT_ROUNDS);
+    const user = await prisma.user.create({
+      data: {
+        username: username.trim(),
+        password: hash,
+        email: email ? email.trim() : null,
+        role: "customer",
+        company_id: null,
+      },
+    });
+
+    const token = jwt.sign(
+      { sub: user.id },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+    const { password: _, ...userWithoutPassword } = user;
+    res.status(201).json({
+      message: "Account created successfully",
+      user: userWithoutPassword,
+      token,
+    });
+  } catch (error) {
+    console.error("Ecommerce signup error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+const ecommerceLogin = async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ message: "Username and password are required" });
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { username: username.trim() },
+          { email: username.trim() },
+        ],
+        status: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: "Invalid username or password" });
+    }
+
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
+      return res.status(400).json({ message: "Invalid username or password" });
+    }
+
+    const token = jwt.sign(
+      { sub: user.id },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+    const { password: _, ...userWithoutPassword } = user;
+    res.json({
+      user: userWithoutPassword,
+      token,
+    });
+  } catch (error) {
+    console.error("Ecommerce login error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
 
 // Get active banners for public display
 const getActiveBanners = async (req, res) => {
@@ -123,7 +236,7 @@ const getEcommerceProducts = async (req, res) => {
       stockWhere.quantity = { gt: 0 }; // Only show products with stock
     }
 
-    // Get products with stock information
+    // Get all matching products (no skip/take yet) so we can sort by sales and stock
     const products = await prisma.product.findMany({
       where: productWhere,
       include: {
@@ -147,22 +260,16 @@ const getEcommerceProducts = async (req, res) => {
           },
         },
       },
-      skip: skip,
-      take: parseInt(limit),
-      orderBy: {
-        created_at: "desc",
-      },
+      orderBy: { created_at: "desc" },
     });
 
-    // Filter products by price range and format response
+    // Map to response shape and compute available_quantity; keep created_at for sorting
     let filteredProducts = products.map((product) => {
-      // Get stock for the selected company or all companies
       const stocks = company_id
         ? product.product_stock.filter((s) => s.company_id === parseInt(company_id))
         : product.product_stock.filter((s) => s.quantity > 0);
-
-      // Get the first available stock (or all if no company selected)
       const availableStock = stocks.length > 0 ? stocks[0] : null;
+      const available_quantity = availableStock ? availableStock.quantity : 0;
 
       return {
         id: product.id,
@@ -180,13 +287,14 @@ const getEcommerceProducts = async (req, res) => {
         sku: product.sku,
         unit_measurement: product.unit_measurement,
         unit_type: product.unit_type,
-        available_quantity: availableStock ? availableStock.quantity : 0,
+        available_quantity,
         company: availableStock ? availableStock.company : null,
         all_stocks: company_id ? [] : stocks.map((s) => ({
           company_id: s.company_id,
           company_name: s.company.company_name,
           quantity: s.quantity,
         })),
+        created_at: product.created_at,
       };
     });
 
@@ -203,18 +311,48 @@ const getEcommerceProducts = async (req, res) => {
       filteredProducts = filteredProducts.filter((p) => p.available_quantity > 0);
     }
 
-    // Get total count for pagination
-    const totalProducts = await prisma.product.count({
-      where: productWhere,
+    // Get total quantity sold per product (from ecommerce orders) for ordering
+    const productIds = filteredProducts.map((p) => p.id);
+    const soldAggregate = productIds.length > 0
+      ? await prisma.ecommerce_order_item.groupBy({
+          by: ["product_id"],
+          where: { product_id: { in: productIds } },
+          _sum: { quantity: true },
+        })
+      : [];
+    const totalSoldByProductId = soldAggregate.reduce((acc, row) => {
+      acc[row.product_id] = row._sum.quantity ?? 0;
+      return acc;
+    }, {});
+
+    // Add total_sold for sorting (do not expose in final response)
+    filteredProducts.forEach((p) => {
+      p._totalSold = totalSoldByProductId[p.id] ?? 0;
     });
 
+    // Order: 1) high-selling (total sold DESC), 2) in-stock (available_quantity > 0), 3) others (created_at DESC)
+    filteredProducts.sort((a, b) => {
+      if (b._totalSold !== a._totalSold) return b._totalSold - a._totalSold;
+      const aInStock = a.available_quantity > 0 ? 1 : 0;
+      const bInStock = b.available_quantity > 0 ? 1 : 0;
+      if (bInStock !== aInStock) return bInStock - aInStock;
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+
+    const totalProducts = filteredProducts.length;
+    const limitNum = parseInt(limit);
+    const paginated = filteredProducts.slice(skip, skip + limitNum);
+
+    // Remove internal sort fields from response
+    const cleanProducts = paginated.map(({ _totalSold, created_at, ...rest }) => rest);
+
     res.json({
-      products: filteredProducts,
+      products: cleanProducts,
       pagination: {
         page: parseInt(page),
-        limit: parseInt(limit),
+        limit: limitNum,
         total: totalProducts,
-        totalPages: Math.ceil(totalProducts / parseInt(limit)),
+        totalPages: Math.ceil(totalProducts / limitNum),
       },
     });
   } catch (error) {
@@ -297,15 +435,19 @@ const getEcommerceProduct = async (req, res) => {
 const addToWishlist = async (req, res) => {
   try {
     const { product_id, customer_id, session_id } = req.body;
+    const userId = req.ecommerceUser?.id;
 
     if (!product_id) {
       return res.status(400).json({ message: "Product ID is required" });
     }
 
-    // Generate session_id if not provided
+    // Logged-in e-commerce user: use customer_id (user id); else guest: body customer_id or session_id
     const finalSessionId = session_id || uuidv4();
+    const useUserId = !!userId;
+    if (!useUserId && !customer_id && !session_id) {
+      return res.status(400).json({ message: "Authentication or session_id is required" });
+    }
 
-    // Check if product exists
     const product = await prisma.product.findUnique({
       where: { id: parseInt(product_id) },
     });
@@ -314,25 +456,24 @@ const addToWishlist = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    // Check if already in wishlist
+    const existingWhere = {
+      product_id: parseInt(product_id),
+      ...(useUserId ? { customer_id: userId } : customer_id ? { customer_id: parseInt(customer_id) } : { session_id: finalSessionId }),
+    };
     const existing = await prisma.ecommerce_wishlist.findFirst({
-      where: {
-        product_id: parseInt(product_id),
-        ...(customer_id ? { customer_id: parseInt(customer_id) } : { session_id: finalSessionId }),
-      },
+      where: existingWhere,
     });
 
     if (existing) {
       return res.status(400).json({ message: "Product already in wishlist" });
     }
 
-    // Add to wishlist
+    const createData = {
+      product_id: parseInt(product_id),
+      ...(useUserId ? { customer_id: userId, session_id: null } : customer_id ? { customer_id: parseInt(customer_id), session_id: null } : { session_id: finalSessionId, customer_id: null }),
+    };
     const wishlistItem = await prisma.ecommerce_wishlist.create({
-      data: {
-        product_id: parseInt(product_id),
-        customer_id: customer_id ? parseInt(customer_id) : null,
-        session_id: customer_id ? null : finalSessionId,
-      },
+      data: createData,
       include: {
         product: {
           include: {
@@ -363,16 +504,16 @@ const addToWishlist = async (req, res) => {
 // Get wishlist
 const getWishlist = async (req, res) => {
   try {
+    const userId = req.ecommerceUser?.id;
     const { customer_id, session_id } = req.query;
 
-    if (!customer_id && !session_id) {
-      return res.status(400).json({ message: "customer_id or session_id is required" });
+    if (!userId && !customer_id && !session_id) {
+      return res.status(400).json({ message: "Authentication or customer_id or session_id is required" });
     }
 
+    const where = userId ? { customer_id: userId } : customer_id ? { customer_id: parseInt(customer_id) } : { session_id: session_id };
     const wishlistItems = await prisma.ecommerce_wishlist.findMany({
-      where: customer_id
-        ? { customer_id: parseInt(customer_id) }
-        : { session_id: session_id },
+      where,
       include: {
         product: {
           include: {
@@ -424,6 +565,7 @@ const getWishlist = async (req, res) => {
 const removeFromWishlist = async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.ecommerceUser?.id;
     const { customer_id, session_id } = req.query;
 
     const wishlistItem = await prisma.ecommerce_wishlist.findUnique({
@@ -434,12 +576,18 @@ const removeFromWishlist = async (req, res) => {
       return res.status(404).json({ message: "Wishlist item not found" });
     }
 
-    // Verify ownership
-    if (customer_id && wishlistItem.customer_id !== parseInt(customer_id)) {
+    // Verify ownership: customer_id (e-commerce user id) or session_id
+    if (userId && wishlistItem.customer_id !== userId) {
       return res.status(403).json({ message: "Unauthorized" });
     }
-    if (session_id && wishlistItem.session_id !== session_id) {
+    if (!userId && customer_id && wishlistItem.customer_id !== parseInt(customer_id)) {
       return res.status(403).json({ message: "Unauthorized" });
+    }
+    if (!userId && session_id && wishlistItem.session_id !== session_id) {
+      return res.status(403).json({ message: "Unauthorized" });
+    }
+    if (!userId && !customer_id && !session_id) {
+      return res.status(400).json({ message: "Authentication or customer_id or session_id is required" });
     }
 
     await prisma.ecommerce_wishlist.delete({
@@ -457,15 +605,18 @@ const removeFromWishlist = async (req, res) => {
 const addToCart = async (req, res) => {
   try {
     const { product_id, quantity = 1, customer_id, session_id } = req.body;
+    const userId = req.ecommerceUser?.id;
 
     if (!product_id) {
       return res.status(400).json({ message: "Product ID is required" });
     }
 
-    // Generate session_id if not provided
     const finalSessionId = session_id || uuidv4();
+    const useUserId = !!userId;
+    if (!useUserId && !customer_id && !session_id) {
+      return res.status(400).json({ message: "Authentication or session_id is required" });
+    }
 
-    // Check if product exists
     const product = await prisma.product.findUnique({
       where: { id: parseInt(product_id) },
     });
@@ -474,17 +625,16 @@ const addToCart = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    // Check if already in cart
+    const existingWhere = {
+      product_id: parseInt(product_id),
+      ...(useUserId ? { customer_id: userId } : customer_id ? { customer_id: parseInt(customer_id) } : { session_id: finalSessionId }),
+    };
     const existing = await prisma.ecommerce_cart.findFirst({
-      where: {
-        product_id: parseInt(product_id),
-        ...(customer_id ? { customer_id: parseInt(customer_id) } : { session_id: finalSessionId }),
-      },
+      where: existingWhere,
     });
 
     let cartItem;
     if (existing) {
-      // Update quantity
       cartItem = await prisma.ecommerce_cart.update({
         where: { id: existing.id },
         data: {
@@ -501,14 +651,13 @@ const addToCart = async (req, res) => {
         },
       });
     } else {
-      // Add to cart
+      const createData = {
+        product_id: parseInt(product_id),
+        quantity: parseInt(quantity),
+        ...(useUserId ? { customer_id: userId, session_id: null } : customer_id ? { customer_id: parseInt(customer_id), session_id: null } : { session_id: finalSessionId, customer_id: null }),
+      };
       cartItem = await prisma.ecommerce_cart.create({
-        data: {
-          product_id: parseInt(product_id),
-          quantity: parseInt(quantity),
-          customer_id: customer_id ? parseInt(customer_id) : null,
-          session_id: customer_id ? null : finalSessionId,
-        },
+        data: createData,
         include: {
           product: {
             include: {
@@ -540,16 +689,16 @@ const addToCart = async (req, res) => {
 // Get cart
 const getCart = async (req, res) => {
   try {
+    const userId = req.ecommerceUser?.id;
     const { customer_id, session_id } = req.query;
 
-    if (!customer_id && !session_id) {
-      return res.status(400).json({ message: "customer_id or session_id is required" });
+    if (!userId && !customer_id && !session_id) {
+      return res.status(400).json({ message: "Authentication or customer_id or session_id is required" });
     }
 
+    const where = userId ? { customer_id: userId } : customer_id ? { customer_id: parseInt(customer_id) } : { session_id: session_id };
     const cartItems = await prisma.ecommerce_cart.findMany({
-      where: customer_id
-        ? { customer_id: parseInt(customer_id) }
-        : { session_id: session_id },
+      where,
       include: {
         product: {
           include: {
@@ -609,6 +758,7 @@ const getCart = async (req, res) => {
 const updateCartItem = async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.ecommerceUser?.id;
     const { quantity, customer_id, session_id } = req.body;
 
     const cartItem = await prisma.ecommerce_cart.findUnique({
@@ -619,12 +769,17 @@ const updateCartItem = async (req, res) => {
       return res.status(404).json({ message: "Cart item not found" });
     }
 
-    // Verify ownership
-    if (customer_id && cartItem.customer_id !== parseInt(customer_id)) {
+    if (userId && cartItem.customer_id !== userId) {
       return res.status(403).json({ message: "Unauthorized" });
     }
-    if (session_id && cartItem.session_id !== session_id) {
+    if (!userId && customer_id && cartItem.customer_id !== parseInt(customer_id)) {
       return res.status(403).json({ message: "Unauthorized" });
+    }
+    if (!userId && session_id && cartItem.session_id !== session_id) {
+      return res.status(403).json({ message: "Unauthorized" });
+    }
+    if (!userId && !customer_id && !session_id) {
+      return res.status(400).json({ message: "Authentication or customer_id or session_id is required" });
     }
 
     if (parseInt(quantity) <= 0) {
@@ -670,6 +825,7 @@ const updateCartItem = async (req, res) => {
 const removeFromCart = async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.ecommerceUser?.id;
     const { customer_id, session_id } = req.query;
 
     const cartItem = await prisma.ecommerce_cart.findUnique({
@@ -680,12 +836,17 @@ const removeFromCart = async (req, res) => {
       return res.status(404).json({ message: "Cart item not found" });
     }
 
-    // Verify ownership
-    if (customer_id && cartItem.customer_id !== parseInt(customer_id)) {
+    if (userId && cartItem.customer_id !== userId) {
       return res.status(403).json({ message: "Unauthorized" });
     }
-    if (session_id && cartItem.session_id !== session_id) {
+    if (!userId && customer_id && cartItem.customer_id !== parseInt(customer_id)) {
       return res.status(403).json({ message: "Unauthorized" });
+    }
+    if (!userId && session_id && cartItem.session_id !== session_id) {
+      return res.status(403).json({ message: "Unauthorized" });
+    }
+    if (!userId && !customer_id && !session_id) {
+      return res.status(400).json({ message: "Authentication or customer_id or session_id is required" });
     }
 
     await prisma.ecommerce_cart.delete({
@@ -975,6 +1136,9 @@ const getOrder = async (req, res) => {
 };
 
 module.exports = {
+  optionalEcommerceAuth,
+  ecommerceSignup,
+  ecommerceLogin,
   getActiveBanners,
   getAllCompanies,
   getEcommerceProducts,

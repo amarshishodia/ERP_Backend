@@ -31,6 +31,7 @@ const productCategoryRoutes = require("./routes/inventory/productCategory/produc
 const bookPublisherRoutes = require("./routes/inventory/bookPublisher/bookPublisher.routes");
 const productCurrencyRoutes = require("./routes/inventory/productCurrency/productCurrency.routes");
 const discountMasterRoutes = require("./routes/inventory/discountMaster/discountMaster.routes");
+const locationRoutes = require("./routes/inventory/location/location.routes");
 const accountRoutes = require("./routes/accounting/account/account.routes");
 const settingRoutes = require("./routes/setting/setting.routes");
 const superAdminRoutes = require("./routes/superAdmin/superAdmin.routes");
@@ -119,6 +120,7 @@ app.use("/v1/product-category", productCategoryRoutes);
 app.use("/v1/book-publisher", bookPublisherRoutes);
 app.use("/v1/product-currency", productCurrencyRoutes);
 app.use("/v1/discount-master", discountMasterRoutes);
+app.use("/v1/location", locationRoutes);
 app.use("/v1/account", accountRoutes);
 app.use("/v1/setting", settingRoutes);
 app.use("/v1/super-admin", superAdminRoutes);

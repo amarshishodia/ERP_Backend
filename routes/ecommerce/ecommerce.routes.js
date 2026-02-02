@@ -1,5 +1,8 @@
 const express = require("express");
 const {
+  optionalEcommerceAuth,
+  ecommerceSignup,
+  ecommerceLogin,
   getActiveBanners,
   getAllCompanies,
   getEcommerceProducts,
@@ -17,6 +20,13 @@ const {
 } = require("./ecommerce.controllers");
 
 const ecommerceRoutes = express.Router();
+
+// Optional JWT auth for wishlist/cart (sets req.ecommerceUser when valid token)
+ecommerceRoutes.use(optionalEcommerceAuth);
+
+// Auth (no company_id)
+ecommerceRoutes.post("/auth/signup", ecommerceSignup);
+ecommerceRoutes.post("/auth/login", ecommerceLogin);
 
 // Public routes (no authentication required)
 ecommerceRoutes.get("/banners", getActiveBanners);

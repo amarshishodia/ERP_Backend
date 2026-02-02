@@ -28,19 +28,50 @@ const createSingleSupplier = async (req, res) => {
     }
   } else if (req.query.query === "createmany") {
     try {
-      // create many suppliers from an array of objects with company_id
-      const createdSupplier = await prisma.supplier.createMany({
-        data: req.body.map((supplier) => {
-          return {
-            name: supplier.name,
-            phone: supplier.phone,
-            address: supplier.address,
+      const upsert = req.query.upsert === "true";
+      const rows = Array.isArray(req.body) ? req.body : [];
+
+      if (upsert && rows.length > 0) {
+        // Add or edit: upsert by phone (update if exists, create if not)
+        let created = 0;
+        let updated = 0;
+        for (const row of rows) {
+          const name = String(row.name || "").trim();
+          const phone = String(row.phone || "").trim();
+          const address = String(row.address || "").trim();
+          if (!name || !phone || !address) continue;
+          const existing = await prisma.supplier.findUnique({
+            where: {
+              phone_company_id: { phone, company_id: companyId },
+            },
+          });
+          if (existing) {
+            await prisma.supplier.update({
+              where: { id: existing.id },
+              data: { name, address },
+            });
+            updated += 1;
+          } else {
+            await prisma.supplier.create({
+              data: { name, phone, address, company_id: companyId },
+            });
+            created += 1;
+          }
+        }
+        res.json({ created, updated, message: `Created ${created}, updated ${updated}` });
+      } else {
+        // create many only (skip duplicates)
+        const createdSupplier = await prisma.supplier.createMany({
+          data: rows.map((supplier) => ({
+            name: String(supplier.name || "").trim(),
+            phone: String(supplier.phone || "").trim(),
+            address: String(supplier.address || "").trim(),
             company_id: companyId,
-          };
-        }),
-        skipDuplicates: true,
-      });
-      res.json(createdSupplier);
+          })).filter((s) => s.name && s.phone && s.address),
+          skipDuplicates: true,
+        });
+        res.json(createdSupplier);
+      }
     } catch (error) {
       res.status(400).json(error.message);
       console.log(error.message);

@@ -34,6 +34,8 @@ model user {
   designation      designation?        @relation(fields: [designation_id], references: [id])
   company          appSetting?          @relation(fields: [company_id], references: [id])
   product_sale_histories product_sale_history[]
+  ecommerce_wishlist     ecommerce_wishlist[]  // customer_id in wishlist references user (e-commerce)
+  ecommerce_cart         ecommerce_cart[]      // customer_id in cart references user (e-commerce)
 
   @@index([designation_id], map: "user_designation_id_fkey")
   @@index([company_id])
@@ -57,6 +59,7 @@ model product {
   name                         String?
   isbn                         String                         @unique
   author                       String?
+  quantity                     Int                            @default(0)
   purchase_price               Float?
   sale_price                   Float
   imageName                    String?
@@ -81,6 +84,7 @@ model product {
   quotationInvoiceProduct      quotationInvoiceProduct[]
   challanInvoiceProduct        challanInvoiceProduct[]
   product_stock                product_stock[]
+  stock_entries                stock[]
   product_purchase_history     product_purchase_history[]
   product_sale_history         product_sale_history[]
   ecommerce_wishlist           ecommerce_wishlist[]
@@ -245,8 +249,6 @@ model customer {
   challanInvoice     challanInvoice[]
   product_sale_histories product_sale_history[]
   sale_discounts     discount_master[]
-  ecommerce_wishlist ecommerce_wishlist[]
-  ecommerce_cart     ecommerce_cart[]
   ecommerce_orders   ecommerce_order[]
 
   @@unique([phone, company_id])
@@ -591,6 +593,8 @@ model appSetting {
   quotationInvoices  quotationInvoice[]
   returnSaleInvoices returnSaleInvoice[]
   product_stocks     product_stock[]
+  locations         location[]
+  stocks            stock[]
   product_purchase_histories product_purchase_history[]
   product_sale_histories     product_sale_history[]
   discount_masters   discount_master[]
@@ -639,6 +643,39 @@ model product_stock {
   @@unique([product_id, company_id])
   @@index([product_id])
   @@index([company_id])
+}
+
+model location {
+  id         Int      @id @default(autoincrement())
+  name       String
+  company_id Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  company    appSetting @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  stock_entries stock[]
+
+  @@unique([name, company_id])
+  @@index([company_id])
+}
+
+model stock {
+  id                Int       @id @default(autoincrement()) @map("stockId")
+  company_id        Int
+  product_id        Int       @map("productId")
+  location_id       Int       @map("locationId")
+  transaction_date  DateTime  @map("transactionDate")
+  purchase_price    Float     @map("purchasePrice")
+  quantity          Int
+  status            Boolean   @default(true)
+  created_date      DateTime  @default(now()) @map("createdDate")
+  product           product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  company           appSetting @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  location          location  @relation(fields: [location_id], references: [id], onDelete: Cascade)
+
+  @@index([product_id])
+  @@index([company_id])
+  @@index([location_id])
+  @@index([transaction_date])
 }
 
 model product_purchase_history {
@@ -749,12 +786,12 @@ model ecommerce_banner {
 model ecommerce_wishlist {
   id          Int       @id @default(autoincrement())
   product_id  Int
-  customer_id Int?      // Optional - can be null for guest users
+  customer_id Int?      // Logged-in user id (user table) or null for guest
   session_id  String?   // For guest users
   created_at  DateTime  @default(now())
   updated_at  DateTime  @updatedAt
   product     product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
-  customer    customer? @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  user        user?     @relation(fields: [customer_id], references: [id], onDelete: Cascade)
 
   @@unique([product_id, customer_id])
   @@unique([product_id, session_id])
@@ -767,12 +804,12 @@ model ecommerce_cart {
   id          Int       @id @default(autoincrement())
   product_id  Int
   quantity    Int       @default(1)
-  customer_id Int?      // Optional - can be null for guest users
+  customer_id Int?      // Logged-in user id (user table) or null for guest
   session_id  String?   // For guest users
   created_at  DateTime  @default(now())
   updated_at  DateTime  @updatedAt
   product     product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
-  customer    customer? @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  user        user?     @relation(fields: [customer_id], references: [id], onDelete: Cascade)
 
   @@unique([product_id, customer_id])
   @@unique([product_id, session_id])
