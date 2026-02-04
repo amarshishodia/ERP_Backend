@@ -22,49 +22,83 @@ const createSingleBookPublisher = async (req, res) => {
 		}
 	} else if (req.query.query === "createmany") {
 		try {
-			// Get first company_id for publisher (publishers are shared, not company-specific)
 			const firstCompany = await prisma.appSetting.findFirst({
 				select: { id: true },
 			});
-			
-			// create many book_publishers from an array of objects (not company-specific)
-			const createdBookPublishers = await prisma.book_publisher.createMany({
-				data: req.body.map((book_publisher) => {
-					return {
-						name: book_publisher.name,
-						company_id: firstCompany ? firstCompany.id : 1,
-					};
-				}),
-				skipDuplicates: true,
-			});
-			res.json(createdBookPublishers);
+			const companyId = firstCompany ? firstCompany.id : 1;
+			const upsert = req.query.upsert === "true";
+			const rows = Array.isArray(req.body) ? req.body : [];
+
+			if (upsert && rows.length > 0) {
+				let created = 0;
+				let updated = 0;
+				for (const row of rows) {
+					const name = String(row.name || "").trim();
+					if (!name) continue;
+					const address = row.address != null ? String(row.address).trim() || null : null;
+					const phone = row.phone != null ? String(row.phone).trim() || null : null;
+					const email = row.email != null ? String(row.email).trim() || null : null;
+					const existing = await prisma.book_publisher.findUnique({
+						where: {
+							name_company_id: { name, company_id: companyId },
+						},
+					});
+					if (existing) {
+						await prisma.book_publisher.update({
+							where: { id: existing.id },
+							data: { address, phone, email },
+						});
+						updated += 1;
+					} else {
+						await prisma.book_publisher.create({
+							data: { name, company_id: companyId, address, phone, email },
+						});
+						created += 1;
+					}
+				}
+				res.json({ created, updated, message: `Created ${created}, updated ${updated}` });
+			} else {
+				const createdBookPublishers = await prisma.book_publisher.createMany({
+					data: rows
+						.filter((r) => String(r.name || "").trim())
+						.map((r) => ({
+							name: String(r.name).trim(),
+							company_id: companyId,
+							address: r.address != null ? String(r.address).trim() || null : null,
+							phone: r.phone != null ? String(r.phone).trim() || null : null,
+							email: r.email != null ? String(r.email).trim() || null : null,
+						})),
+					skipDuplicates: true,
+				});
+				res.json(createdBookPublishers);
+			}
 		} catch (error) {
 			res.status(400).json(error.message);
 			console.log(error.message);
 		}
 	} else {
 		try {
-			// Get first company_id for publisher (publishers are shared, not company-specific)
 			const firstCompany = await prisma.appSetting.findFirst({
 				select: { id: true },
 			});
-			
-			// create single book_publisher (not company-specific)
+			const companyId = firstCompany ? firstCompany.id : 1;
 			const existingProduct = await prisma.book_publisher.findFirst({
 				where: {
 					name: req.body.name,
+					company_id: companyId,
 				},
 			});
-		
 			if (existingProduct) {
 				return res.status(400).json({ message: 'Publisher already exist.' });
 			}
-
 			const createdBookPublisher = await prisma.book_publisher.create({
 				data: {
 					name: req.body.name,
-					company_id: firstCompany ? firstCompany.id : 1,
-				}
+					company_id: companyId,
+					address: req.body.address != null && req.body.address !== '' ? req.body.address : null,
+					phone: req.body.phone != null && req.body.phone !== '' ? req.body.phone : null,
+					email: req.body.email != null && req.body.email !== '' ? req.body.email : null,
+				},
 			});
 			res.json(createdBookPublisher);
 		} catch (error) {
@@ -95,18 +129,16 @@ const getAllBookPublishers = async (req, res) => {
 	} else {
 		const { skip, limit } = getPagination(req.query);
 		try {
-			// get all book_publishers paginated (not company-specific)
-			const getAllBookPublishers = await prisma.book_publisher.findMany({
-				orderBy: {
-					id: "asc",
-				},
-				include: {
-					product: true,
-				},
-				skip: parseInt(skip),
-				take: parseInt(limit),
-			});
-			res.json(getAllBookPublishers);
+			const [data, total] = await Promise.all([
+				prisma.book_publisher.findMany({
+					orderBy: { id: "asc" },
+					include: { product: true },
+					skip: parseInt(skip),
+					take: parseInt(limit),
+				}),
+				prisma.book_publisher.count(),
+			]);
+			res.json({ data, total });
 		} catch (error) {
 			res.status(400).json(error.message);
 			console.log(error.message);
@@ -152,15 +184,16 @@ const updateSingleBookPublisher = async (req, res) => {
 			return res.status(404).json({ error: "Book publisher not found" });
 		}
 
-		const updatedBookPublisher = await prisma.book_publisher.update({
-			where: {
-				id: parseInt(req.params.id),
-			},
-			data: {
-				name: req.body.name,
-				url: req.body.url,
-			},
-		});
+		const updateData = { name: req.body.name };
+			if (req.body.address !== undefined) updateData.address = req.body.address === '' ? null : req.body.address;
+			if (req.body.phone !== undefined) updateData.phone = req.body.phone === '' ? null : req.body.phone;
+			if (req.body.email !== undefined) updateData.email = req.body.email === '' ? null : req.body.email;
+			const updatedBookPublisher = await prisma.book_publisher.update({
+				where: {
+					id: parseInt(req.params.id),
+				},
+				data: updateData,
+			});
 		res.json(updatedBookPublisher);
 	} catch (error) {
 		res.status(400).json(error.message);

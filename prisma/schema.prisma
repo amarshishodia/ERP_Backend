@@ -129,14 +129,17 @@ model product_product_category {
 }
 
 model book_publisher {
-  id        Int       @id @default(autoincrement())
-  name      String
+  id         Int       @id @default(autoincrement())
+  name       String
   company_id Int
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  product   product[]
-  company   appSetting @relation(fields: [company_id], references: [id])
-  discounts discount_master[]
+  address    String?
+  phone      String?
+  email      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  product    product[]
+  company    appSetting @relation(fields: [company_id], references: [id])
+  discounts  discount_master[]
 
   @@unique([name, company_id])
   @@index([name], map: "book_publisher_name_idx")

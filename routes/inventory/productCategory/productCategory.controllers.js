@@ -29,17 +29,42 @@ const createSingleProductCategory = async (req, res) => {
 		}
 	} else if (req.query.query === "createmany") {
 		try {
-			// create many product_category from an array of objects with company_id
-			const createdProductCategory = await prisma.product_category.createMany({
-				data: req.body.map((product_category) => {
-					return {
-						name: product_category.name,
-						company_id: companyId,
-					};
-				}),
-				skipDuplicates: true,
-			});
-			res.json(createdProductCategory);
+			const upsert = req.query.upsert === "true";
+			const rows = Array.isArray(req.body) ? req.body : [];
+
+			if (upsert && rows.length > 0) {
+				let created = 0;
+				let updated = 0;
+				for (const row of rows) {
+					const name = String(row.name || "").trim();
+					if (!name) continue;
+					const existing = await prisma.product_category.findUnique({
+						where: {
+							name_company_id: { name, company_id: companyId },
+						},
+					});
+					if (existing) {
+						updated += 1;
+					} else {
+						await prisma.product_category.create({
+							data: { name, company_id: companyId },
+						});
+						created += 1;
+					}
+				}
+				res.json({ created, updated, message: `Created ${created}, updated ${updated}` });
+			} else {
+				const createdProductCategory = await prisma.product_category.createMany({
+					data: rows
+						.filter((r) => String(r.name || "").trim())
+						.map((r) => ({
+							name: String(r.name).trim(),
+							company_id: companyId,
+						})),
+					skipDuplicates: true,
+				});
+				res.json(createdProductCategory);
+			}
 		} catch (error) {
 			res.status(400).json(error.message);
 			console.log(error.message);
