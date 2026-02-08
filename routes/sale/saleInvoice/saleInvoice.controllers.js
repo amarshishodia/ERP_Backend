@@ -940,6 +940,7 @@ const getSingleSaleInvoice = async (req, res) => {
             product: {
               include: {
                 book_publisher: true,
+                product_currency: true,
               },
             },
           },
@@ -1190,16 +1191,15 @@ const updateSingleSaleInvoice = async (req, res) => {
       return res.status(400).json({ message: 'Invoice number is already taken.' });
     }
 
-    // Verify that all products belong to the user's company
+    // Verify that all products exist (product model has no company_id; company scope is via product_stock / invoice)
     const productIds = req.body.saleInvoiceProduct.map(p => Number(p.product_id));
     const products = await prisma.product.findMany({
       where: { id: { in: productIds } },
-      select: { id: true, company_id: true, purchase_price: true },
+      select: { id: true, purchase_price: true },
     });
 
-    const invalidProducts = products.filter(p => p.company_id !== companyId);
-    if (invalidProducts.length > 0) {
-      return res.status(403).json({ error: "Some products do not belong to your company" });
+    if (products.length !== productIds.length) {
+      return res.status(404).json({ error: "Some products not found" });
     }
 
     // Calculate the new total sale price, total discount, and other values
@@ -1227,10 +1227,7 @@ const updateSingleSaleInvoice = async (req, res) => {
     const allProduct = await Promise.all(
       req.body.saleInvoiceProduct.map(async (item) => {
         const product = await prisma.product.findFirst({
-          where: {
-            id: item.product_id,
-            company_id: companyId,
-          },
+          where: { id: item.product_id },
         });
         return product;
       })
@@ -1309,8 +1306,8 @@ const updateSingleSaleInvoice = async (req, res) => {
       await prisma.transaction.create({
         data: {
           date: new Date(date),
-          debit_id: 1,
-          credit_id: 8,
+          debit: { connect: { id: 1 } },
+          credit: { connect: { id: 8 } },
           amount: parseFloat(req.body.paid_amount),
           particulars: `Cash receive on Sale Invoice #${updatedInvoice.id}`,
           type: 'sale',
@@ -1330,8 +1327,8 @@ const updateSingleSaleInvoice = async (req, res) => {
       await prisma.transaction.create({
         data: {
           date: new Date(date),
-          debit_id: 4,
-          credit_id: 8,
+          debit: { connect: { id: 4 } },
+          credit: { connect: { id: 8 } },
           amount: due_amount,
           particulars: `Due on Sale Invoice #${updatedInvoice.id}`,
           type: 'sale',
@@ -1346,8 +1343,8 @@ const updateSingleSaleInvoice = async (req, res) => {
     await prisma.transaction.create({
       data: {
         date: new Date(date),
-        debit_id: 9,
-        credit_id: 3,
+        debit: { connect: { id: 9 } },
+        credit: { connect: { id: 3 } },
         amount: totalPurchasePrice,
         particulars: `Cost of sales on Sale Invoice #${updatedInvoice.id}`,
         type: 'sale',
