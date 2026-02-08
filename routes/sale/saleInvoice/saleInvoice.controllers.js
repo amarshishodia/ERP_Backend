@@ -246,7 +246,7 @@ const createSingleSaleInvoice = async (req, res) => {
           additionalDiscount -
           totalPurchasePrice,
         due_amount: dueAmount,
-        sales_order_id: sales_order_id,
+        ...(sales_order_id ? { sales_order: { connect: { id: sales_order_id } } } : {}),
         company: {
           connect: { id: companyId },
         },
