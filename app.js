@@ -10,11 +10,13 @@ const paymentPurchaseInvoiceRoutes = require("./routes/purchase/paymentPurchaseI
 const paymentSaleInvoiceRoutes = require("./routes/sale/paymentSaleInvoice/paymentSaleInvoice.routes");
 const returnSaleInvoiceRoutes = require("./routes/sale/returnSaleInvoice/returnSaleInvoice.routes");
 const purchaseInvoiceRoutes = require("./routes/purchase/purchaseInvoice/purchaseInvoice.routes");
+const purchaseOrderRoutes = require("./routes/purchase/purchaseOrder/purchaseOrder.routes");
 const returnPurchaseInvoiceRoutes = require("./routes/purchase/returnPurchaseInvoice/returnPurchaseInvoice.routes");
 const rolePermissionRoutes = require("./routes/hr/rolePermission/rolePermission.routes");
 const saleInvoiceRoutes = require("./routes/sale/saleInvoice/saleInvoice.routes");
 const quotationRoutes = require("./routes/sale/quotationInvoice/quotationInvoice.routes");
 const challanRoutes = require("./routes/sale/challanInvoice/challanInvoice.routes");
+const salesOrderRoutes = require("./routes/sale/salesOrder/salesOrder.routes");
 const transactionRoutes = require("./routes/accounting/transaction/transaction.routes");
 const permissionRoutes = require("./routes/hr/permission/permission.routes");
 const dashboardRoutes = require("./routes/dashboard/dashboard.routes");
@@ -37,6 +39,7 @@ const settingRoutes = require("./routes/setting/setting.routes");
 const superAdminRoutes = require("./routes/superAdmin/superAdmin.routes");
 const ecommerceRoutes = require("./routes/ecommerce/ecommerce.routes");
 const ecommerceAdminRoutes = require("./routes/ecommerce/admin/admin.routes");
+const tempIsbnRoutes = require("./routes/utils/tempIsbn.routes");
 
 /* variables */
 // express app instance
@@ -100,11 +103,13 @@ app.use(express.json({ extended: true }));
 app.use("/v1/payment-purchase-invoice", paymentPurchaseInvoiceRoutes);
 app.use("/v1/payment-sale-invoice", paymentSaleInvoiceRoutes);
 app.use("/v1/purchase-invoice", purchaseInvoiceRoutes);
+app.use("/v1/purchase-order", purchaseOrderRoutes);
 app.use("/v1/return-purchase-invoice", returnPurchaseInvoiceRoutes);
 app.use("/v1/role-permission", rolePermissionRoutes);
 app.use("/v1/sale-invoice", saleInvoiceRoutes);
 app.use("/v1/quotation", quotationRoutes);
 app.use("/v1/challan", challanRoutes);
+app.use("/v1/sales-order", salesOrderRoutes);
 app.use("/v1/return-sale-invoice", returnSaleInvoiceRoutes);
 app.use("/v1/transaction", transactionRoutes);
 app.use("/v1/permission", permissionRoutes);
@@ -126,5 +131,6 @@ app.use("/v1/setting", settingRoutes);
 app.use("/v1/super-admin", superAdminRoutes);
 app.use("/v1/ecommerce", ecommerceRoutes);
 app.use("/v1/ecommerce/admin", ecommerceAdminRoutes);
+app.use("/v1/utils", tempIsbnRoutes);
 
 module.exports = app;

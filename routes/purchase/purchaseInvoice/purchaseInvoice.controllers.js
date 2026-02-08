@@ -57,6 +57,35 @@ const createSinglePurchaseInvoice = async (req, res) => {
   const finalTotal = subtotalAfterProductDiscounts + roundOffAmount;
   const dueAmount = finalTotal - billDiscount - paidAmount;
   
+  // Handle order linking
+  const sales_order_id = req.body.sales_order_id ? Number(req.body.sales_order_id) : null;
+  const purchase_order_id = req.body.purchase_order_id ? Number(req.body.purchase_order_id) : null;
+
+  // Verify orders exist and belong to company if provided
+  if (sales_order_id) {
+    const salesOrder = await prisma.sales_order.findFirst({
+      where: {
+        id: sales_order_id,
+        company_id: companyId,
+      },
+    });
+    if (!salesOrder) {
+      return res.status(404).json({ error: "Sales order not found" });
+    }
+  }
+
+  if (purchase_order_id) {
+    const purchaseOrder = await prisma.purchase_order.findFirst({
+      where: {
+        id: purchase_order_id,
+        company_id: companyId,
+      },
+    });
+    if (!purchaseOrder) {
+      return res.status(404).json({ error: "Purchase order not found" });
+    }
+  }
+  
   try {
     // convert all incoming data to a specific format.
     const date = new Date(req.body.date).toISOString().split("T")[0];
@@ -71,6 +100,8 @@ const createSinglePurchaseInvoice = async (req, res) => {
         total_product_discount: totalProductDiscount,
         round_off_enabled: req.body.round_off_enabled || false,
         round_off_amount: roundOffAmount,
+        sales_order_id: sales_order_id,
+        purchase_order_id: purchase_order_id,
         company: {
           connect: { id: companyId },
         },
@@ -187,6 +218,116 @@ const createSinglePurchaseInvoice = async (req, res) => {
         },
       });
     }
+
+    // Update order fulfillment/received quantities if linked
+    if (sales_order_id) {
+      // Update sales order item fulfillment
+      for (const item of req.body.purchaseInvoiceProduct) {
+        const productId = Number(item.product_id);
+        const quantity = Number(item.product_quantity);
+
+        // Find matching sales order item
+        const salesOrderItem = await prisma.sales_order_item.findFirst({
+          where: {
+            order_id: sales_order_id,
+            product_id: productId,
+          },
+        });
+
+        if (salesOrderItem) {
+          const newFulfilledQty = Math.min(
+            salesOrderItem.fulfilled_quantity + quantity,
+            salesOrderItem.ordered_quantity
+          );
+
+          await prisma.sales_order_item.update({
+            where: { id: salesOrderItem.id },
+            data: { fulfilled_quantity: newFulfilledQty },
+          });
+        }
+      }
+
+      // Recalculate sales order status
+      const salesOrder = await prisma.sales_order.findUnique({
+        where: { id: sales_order_id },
+        include: { order_items: true },
+      });
+
+      if (salesOrder) {
+        const allFulfilled = salesOrder.order_items.every(
+          item => item.fulfilled_quantity >= item.ordered_quantity
+        );
+        const allPending = salesOrder.order_items.every(
+          item => item.fulfilled_quantity === 0
+        );
+
+        let newStatus = "partial";
+        if (allFulfilled) newStatus = "fulfilled";
+        else if (allPending) newStatus = "pending";
+
+        if (newStatus !== salesOrder.status) {
+          await prisma.sales_order.update({
+            where: { id: sales_order_id },
+            data: { status: newStatus },
+          });
+        }
+      }
+    }
+
+    if (purchase_order_id) {
+      // Update purchase order item received quantities
+      for (const item of req.body.purchaseInvoiceProduct) {
+        const productId = Number(item.product_id);
+        const quantity = Number(item.product_quantity);
+
+        // Find matching purchase order item
+        const purchaseOrderItem = await prisma.purchase_order_item.findFirst({
+          where: {
+            order_id: purchase_order_id,
+            product_id: productId,
+          },
+        });
+
+        if (purchaseOrderItem) {
+          const newReceivedQty = Math.min(
+            purchaseOrderItem.received_quantity + quantity,
+            purchaseOrderItem.ordered_quantity
+          );
+
+          await prisma.purchase_order_item.update({
+            where: { id: purchaseOrderItem.id },
+            data: { received_quantity: newReceivedQty },
+          });
+        }
+      }
+
+      // Recalculate purchase order status
+      const purchaseOrder = await prisma.purchase_order.findUnique({
+        where: { id: purchase_order_id },
+        include: { order_items: true },
+      });
+
+      if (purchaseOrder) {
+        const allReceived = purchaseOrder.order_items.every(
+          item => item.received_quantity >= item.ordered_quantity
+        );
+        const allPending = purchaseOrder.order_items.every(
+          item => item.received_quantity === 0
+        );
+
+        let newStatus = "partial";
+        if (allReceived) newStatus = "received";
+        else if (allPending) newStatus = "pending";
+
+        if (newStatus !== purchaseOrder.status) {
+          await prisma.purchase_order.update({
+            where: { id: purchase_order_id },
+            data: { status: newStatus },
+          });
+        }
+      }
+    }
+
       res.json({
         createdInvoice,
       });

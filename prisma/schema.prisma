@@ -31,6 +31,8 @@ model user {
   saleInvoice      saleInvoice[]
   quotationInvoice quotationInvoice[]
   challanInvoice   challanInvoice[]
+  sales_orders     sales_order[]
+  purchase_orders   purchase_order[]
   designation      designation?        @relation(fields: [designation_id], references: [id])
   company          appSetting?          @relation(fields: [company_id], references: [id])
   product_sale_histories product_sale_history[]
@@ -90,6 +92,8 @@ model product {
   ecommerce_wishlist           ecommerce_wishlist[]
   ecommerce_cart               ecommerce_cart[]
   ecommerce_order_items        ecommerce_order_item[]
+  sales_order_items            sales_order_item[]
+  purchase_order_items          purchase_order_item[]
 
   @@index([book_publisher_id], map: "product_book_publisher_id_fkey")
   @@index([product_category_id], map: "product_product_category_id_fkey")
@@ -187,6 +191,7 @@ model supplier {
   created_at      DateTime          @default(now())
   updated_at      DateTime          @updatedAt
   purchaseInvoice purchaseInvoice[]
+  purchase_orders purchase_order[]
   company         appSetting        @relation(fields: [company_id], references: [id])
   product_purchase_histories product_purchase_history[]
   purchase_discounts discount_master[]
@@ -207,18 +212,24 @@ model purchaseInvoice {
   round_off_amount       Float?                   @default(0)
   supplier_id            Int
   company_id             Int
+  sales_order_id         Int?
+  purchase_order_id      Int?
   note                   String?
   supplier_memo_no       String?
   created_at             DateTime                 @default(now())
   updated_at             DateTime                 @updatedAt
   supplier               supplier                 @relation(fields: [supplier_id], references: [id], onDelete: Cascade)
   company                appSetting               @relation(fields: [company_id], references: [id])
+  sales_order            sales_order?             @relation(fields: [sales_order_id], references: [id], onDelete: SetNull)
+  purchase_order         purchase_order?          @relation(fields: [purchase_order_id], references: [id], onDelete: SetNull)
   returnPurchaseInvoice  returnPurchaseInvoice[]
   purchaseInvoiceProduct purchaseInvoiceProduct[]
   product_purchase_histories product_purchase_history[]
 
   @@index([supplier_id], map: "purchaseInvoice_supplier_id_fkey")
   @@index([company_id])
+  @@index([sales_order_id])
+  @@index([purchase_order_id])
 }
 
 model purchaseInvoiceProduct {
@@ -250,6 +261,7 @@ model customer {
   saleInvoice        saleInvoice[]
   quotationInvoice   quotationInvoice[]
   challanInvoice     challanInvoice[]
+  sales_orders       sales_order[]
   product_sale_histories product_sale_history[]
   sale_discounts     discount_master[]
   ecommerce_orders   ecommerce_order[]
@@ -271,6 +283,7 @@ model saleInvoice {
   customer_id            Int
   user_id                Int
   company_id             Int
+  sales_order_id          Int?
   note                   String?
   round_off_enabled      Boolean?             @default(false)
   round_off_amount       Float?               @default(0)
@@ -282,12 +295,14 @@ model saleInvoice {
   customer               customer             @relation(fields: [customer_id], references: [id], onDelete: Cascade)
   user                   user                 @relation(fields: [user_id], references: [id], onDelete: NoAction)
   company                appSetting           @relation(fields: [company_id], references: [id])
+  sales_order            sales_order?         @relation(fields: [sales_order_id], references: [id], onDelete: SetNull)
   saleInvoiceProduct     saleInvoiceProduct[]
   returnSaleInvoice      returnSaleInvoice[]
   product_sale_histories product_sale_history[]
 
   @@index([customer_id], map: "saleInvoice_customer_id_fkey")
   @@index([user_id], map: "saleInvoice_user_id_fkey")
+  @@index([sales_order_id])
 }
 
 model saleInvoiceProduct {
@@ -602,6 +617,8 @@ model appSetting {
   product_sale_histories     product_sale_history[]
   discount_masters   discount_master[]
   ecommerce_orders  ecommerce_order[]
+  sales_orders      sales_order[]
+  purchase_orders   purchase_order[]
 }
 
 model firm {
@@ -865,6 +882,102 @@ model ecommerce_order_item {
   updated_at          DateTime  @updatedAt
   order               ecommerce_order @relation(fields: [order_id], references: [id], onDelete: Cascade)
   product             product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@index([order_id])
+  @@index([product_id])
+}
+
+model sales_order {
+  id                  Int                  @id @default(autoincrement())
+  order_number        String               @unique
+  order_date          DateTime
+  customer_id         Int
+  company_id          Int
+  user_id             Int
+  status              String               @default("pending") // pending, partial, fulfilled, cancelled
+  total_amount        Float
+  discount            Float                @default(0)
+  note                String?              @db.Text
+  created_at          DateTime             @default(now())
+  updated_at          DateTime             @updatedAt
+  customer            customer             @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  company             appSetting          @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  user                user                 @relation(fields: [user_id], references: [id], onDelete: NoAction)
+  order_items         sales_order_item[]
+  purchaseInvoices    purchaseInvoice[]
+  saleInvoices        saleInvoice[]
+  purchase_orders     purchase_order[]
+
+  @@index([customer_id])
+  @@index([company_id])
+  @@index([user_id])
+  @@index([order_number])
+  @@index([status])
+  @@index([order_date])
+}
+
+model sales_order_item {
+  id                  Int                  @id @default(autoincrement())
+  order_id            Int
+  product_id          Int
+  ordered_quantity    Int
+  fulfilled_quantity  Int                  @default(0)
+  sale_price          Float
+  discount            Float                 @default(0)
+  total_amount        Float
+  created_at          DateTime             @default(now())
+  updated_at          DateTime             @updatedAt
+  order               sales_order           @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  product             product              @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@index([order_id])
+  @@index([product_id])
+}
+
+model purchase_order {
+  id                      Int                  @id @default(autoincrement())
+  order_number            String               @unique
+  order_date              DateTime
+  supplier_id             Int
+  company_id              Int
+  user_id                 Int
+  sales_order_id          Int?
+  status                  String               @default("pending") // pending, partial, received, cancelled
+  total_amount            Float
+  discount                Float                @default(0)
+  expected_delivery_date  DateTime?
+  note                    String?              @db.Text
+  created_at              DateTime             @default(now())
+  updated_at              DateTime             @updatedAt
+  supplier                supplier              @relation(fields: [supplier_id], references: [id], onDelete: Cascade)
+  company                 appSetting           @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  user                    user                 @relation(fields: [user_id], references: [id], onDelete: NoAction)
+  sales_order             sales_order?         @relation(fields: [sales_order_id], references: [id], onDelete: SetNull)
+  order_items             purchase_order_item[]
+  purchaseInvoices        purchaseInvoice[]
+
+  @@index([supplier_id])
+  @@index([company_id])
+  @@index([user_id])
+  @@index([sales_order_id])
+  @@index([order_number])
+  @@index([status])
+  @@index([order_date])
+}
+
+model purchase_order_item {
+  id                  Int                  @id @default(autoincrement())
+  order_id            Int
+  product_id          Int
+  ordered_quantity    Int
+  received_quantity   Int                  @default(0)
+  purchase_price      Float
+  discount            Float                 @default(0)
+  total_amount        Float
+  created_at          DateTime             @default(now())
+  updated_at          DateTime             @updatedAt
+  order               purchase_order        @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  product             product              @relation(fields: [product_id], references: [id], onDelete: Cascade)
 
   @@index([order_id])
   @@index([product_id])

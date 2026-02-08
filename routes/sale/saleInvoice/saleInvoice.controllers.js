@@ -200,6 +200,33 @@ const createSingleSaleInvoice = async (req, res) => {
           (allProduct[index].purchase_price || 0) * item.product_quantity;
       }
     });
+    // Handle sales order linking
+    const sales_order_id = req.body.sales_order_id ? Number(req.body.sales_order_id) : null;
+    let orderNumber = req.body.orderNumber;
+    let orderDate = req.body.orderDate;
+
+    // If sales_order_id is provided, verify it exists and auto-fill order details
+    if (sales_order_id) {
+      const salesOrder = await prisma.sales_order.findFirst({
+        where: {
+          id: sales_order_id,
+          company_id: companyId,
+        },
+      });
+
+      if (!salesOrder) {
+        return res.status(404).json({ error: "Sales order not found" });
+      }
+
+      // Auto-fill order number and date if not provided
+      if (!orderNumber) {
+        orderNumber = salesOrder.order_number;
+      }
+      if (!orderDate) {
+        orderDate = salesOrder.order_date;
+      }
+    }
+
     // convert all incoming date to a specific format.
     const date = new Date(req.body.date).toISOString().split("T")[0];
     // create sale invoice
@@ -219,6 +246,7 @@ const createSingleSaleInvoice = async (req, res) => {
           additionalDiscount -
           totalPurchasePrice,
         due_amount: dueAmount,
+        sales_order_id: sales_order_id,
         company: {
           connect: { id: companyId },
         },
@@ -234,9 +262,8 @@ const createSingleSaleInvoice = async (req, res) => {
         },
         note: req.body.note,
         invoice_number: Number(req.body.invoiceNumber), // to save invoice Number
-        invoice_order_date: req.body.orderDate,
-        // invoice_order_date: new Date(req.body.orderDate),
-        invoice_order_number: req.body.orderNumber,
+        invoice_order_date: orderDate ? new Date(orderDate) : null,
+        invoice_order_number: orderNumber,
         prefix: req.body.prefix,
         // map and save all products from processed products array
         saleInvoiceProduct: {
@@ -345,6 +372,62 @@ const createSingleSaleInvoice = async (req, res) => {
         },
       });
     }
+
+    // Update sales order fulfillment if linked
+    if (sales_order_id) {
+      // Update sales order item fulfillment
+      for (const item of processedProducts) {
+        const productId = item.final_product_id;
+        const quantity = Number(item.product_quantity);
+
+        // Find matching sales order item
+        const salesOrderItem = await prisma.sales_order_item.findFirst({
+          where: {
+            order_id: sales_order_id,
+            product_id: productId,
+          },
+        });
+
+        if (salesOrderItem) {
+          const newFulfilledQty = Math.min(
+            salesOrderItem.fulfilled_quantity + quantity,
+            salesOrderItem.ordered_quantity
+          );
+
+          await prisma.sales_order_item.update({
+            where: { id: salesOrderItem.id },
+            data: { fulfilled_quantity: newFulfilledQty },
+          });
+        }
+      }
+
+      // Recalculate sales order status
+      const salesOrder = await prisma.sales_order.findUnique({
+        where: { id: sales_order_id },
+        include: { order_items: true },
+      });
+
+      if (salesOrder) {
+        const allFulfilled = salesOrder.order_items.every(
+          item => item.fulfilled_quantity >= item.ordered_quantity
+        );
+        const allPending = salesOrder.order_items.every(
+          item => item.fulfilled_quantity === 0
+        );
+
+        let newStatus = "partial";
+        if (allFulfilled) newStatus = "fulfilled";
+        else if (allPending) newStatus = "pending";
+
+        if (newStatus !== salesOrder.status) {
+          await prisma.sales_order.update({
+            where: { id: sales_order_id },
+            data: { status: newStatus },
+          });
+        }
+      }
+    }
+
       res.json({
         createdInvoice,
       });
