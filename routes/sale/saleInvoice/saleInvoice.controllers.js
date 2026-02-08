@@ -229,6 +229,14 @@ const createSingleSaleInvoice = async (req, res) => {
 
     // convert all incoming date to a specific format.
     const date = new Date(req.body.date).toISOString().split("T")[0];
+
+    // Validate user exists (fallback to authenticated user if not provided)
+    const userId = req.body.user_id ? Number(req.body.user_id) : Number(req.auth.sub);
+    const userRecord = await prisma.user.findUnique({ where: { id: userId } });
+    if (!userRecord) {
+      return res.status(400).json({ error: "User not found" });
+    }
+
     // create sale invoice
     const createdInvoice = await prisma.saleInvoice.create({
       data: {
@@ -257,7 +265,7 @@ const createSingleSaleInvoice = async (req, res) => {
         },
         user: {
           connect: {
-            id: Number(req.body.user_id),
+            id: userId,
           },
         },
         note: req.body.note,
