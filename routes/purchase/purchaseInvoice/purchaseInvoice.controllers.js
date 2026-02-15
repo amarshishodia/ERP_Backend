@@ -40,15 +40,15 @@ const createSinglePurchaseInvoice = async (req, res) => {
   // using purchase price, product_quantity and product_discount
   let totalPurchasePrice = 0;
   let totalProductDiscount = 0;
-  
+
   req.body.purchaseInvoiceProduct.forEach((item) => {
     const itemTotal = parseFloat(item.product_purchase_price) * parseFloat(item.product_quantity);
     const itemDiscount = (itemTotal * parseFloat(item.product_purchase_discount || 0)) / 100;
-    
+
     totalPurchasePrice += itemTotal;
     totalProductDiscount += itemDiscount;
   });
-  
+
   // Calculate final amounts
   const subtotalAfterProductDiscounts = totalPurchasePrice - totalProductDiscount;
   const billDiscount = parseFloat(req.body.discount || 0);
@@ -56,7 +56,7 @@ const createSinglePurchaseInvoice = async (req, res) => {
   const paidAmount = parseFloat(req.body.paid_amount || 0);
   const finalTotal = subtotalAfterProductDiscounts + roundOffAmount;
   const dueAmount = finalTotal - billDiscount - paidAmount;
-  
+
   // Handle order linking
   const sales_order_id = req.body.sales_order_id ? Number(req.body.sales_order_id) : null;
   const purchase_order_id = req.body.purchase_order_id ? Number(req.body.purchase_order_id) : null;
@@ -85,7 +85,7 @@ const createSinglePurchaseInvoice = async (req, res) => {
       return res.status(404).json({ error: "Purchase order not found" });
     }
   }
-  
+
   try {
     // convert all incoming data to a specific format.
     const date = new Date(req.body.date).toISOString().split("T")[0];
@@ -100,8 +100,8 @@ const createSinglePurchaseInvoice = async (req, res) => {
         total_product_discount: totalProductDiscount,
         round_off_enabled: req.body.round_off_enabled || false,
         round_off_amount: roundOffAmount,
-        sales_order_id: sales_order_id,
-        purchase_order_id: purchase_order_id,
+        ...(sales_order_id && { sales_order: { connect: { id: sales_order_id } } }),
+        ...(purchase_order_id && { purchase_order: { connect: { id: purchase_order_id } } }),
         company: {
           connect: { id: companyId },
         },
@@ -124,7 +124,7 @@ const createSinglePurchaseInvoice = async (req, res) => {
             product_purchase_price: parseFloat(product.product_purchase_price),
             product_purchase_discount: parseFloat(product.product_purchase_discount || 0)
           })),
-        }, 
+        },
       },
     });
     // pay on purchase transaction create
@@ -160,20 +160,20 @@ const createSinglePurchaseInvoice = async (req, res) => {
       const itemTotal = parseFloat(item.product_purchase_price) * parseFloat(item.product_quantity);
       const itemProductDiscount = (itemTotal * parseFloat(item.product_purchase_discount || 0)) / 100;
       const itemPriceAfterProductDiscount = itemTotal - itemProductDiscount;
-      
+
       // Calculate proportional bill discount for this product
       // Bill discount is allocated proportionally based on each product's contribution to subtotalAfterProductDiscounts
-      const billDiscountAllocation = subtotalAfterProductDiscounts > 0 
+      const billDiscountAllocation = subtotalAfterProductDiscounts > 0
         ? (itemPriceAfterProductDiscount / subtotalAfterProductDiscounts) * billDiscount
         : 0;
-      
+
       // Calculate effective price per unit after all discounts
       const effectiveTotalPrice = itemPriceAfterProductDiscount - billDiscountAllocation;
       const effectivePricePerUnit = effectiveTotalPrice / parseFloat(item.product_quantity);
-      
+
       const productId = Number(item.product_id);
       const quantity = Number(item.product_quantity);
-      
+
       // Update product purchase price (master product)
       await prisma.product.update({
         where: { id: productId },
@@ -181,7 +181,7 @@ const createSinglePurchaseInvoice = async (req, res) => {
           purchase_price: parseFloat(effectivePricePerUnit.toFixed(2)),
         },
       });
-      
+
       // Update product_stock for this company
       await prisma.product_stock.upsert({
         where: {
@@ -201,7 +201,7 @@ const createSinglePurchaseInvoice = async (req, res) => {
           quantity: quantity,
         },
       });
-      
+
       // Create purchase history entry
       await prisma.product_purchase_history.create({
         data: {
@@ -328,9 +328,9 @@ const createSinglePurchaseInvoice = async (req, res) => {
       }
     }
 
-      res.json({
-        createdInvoice,
-      });
+    res.json({
+      createdInvoice,
+    });
   } catch (error) {
     res.status(400).json(error.message);
     console.log(error.message);
