@@ -387,7 +387,7 @@ const checkExistingData = async (extractedData) => {
           // Check if publisher exists
           let publisherId = null;
           if (product.publisher) {
-            const existingPublisher = await prisma.bookPublisher.findFirst({
+            const existingPublisher = await prisma.book_publisher.findFirst({
               where: { name: { contains: product.publisher } }
             });
 
@@ -406,7 +406,7 @@ const checkExistingData = async (extractedData) => {
           // Check if currency exists
           let currencyId = null;
           if (product.currency) {
-            const existingCurrency = await prisma.productCurrency.findFirst({
+            const existingCurrency = await prisma.product_currency.findFirst({
               where: { name: { contains: product.currency } }
             });
 
