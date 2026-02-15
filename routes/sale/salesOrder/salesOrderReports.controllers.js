@@ -1,6 +1,5 @@
 const { getCompanyId } = require("../../../utils/company");
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const prisma = require("../../../utils/prisma");
 
 // Get Pending Items Report
 const getOrderPendingItems = async (req, res) => {

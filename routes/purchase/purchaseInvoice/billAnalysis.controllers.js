@@ -1,5 +1,4 @@
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const prisma = require("../../../utils/prisma");
 const OpenAI = require('openai');
 const multer = require('multer');
 const path = require('path');
@@ -30,7 +29,7 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ 
+const upload = multer({
   storage: storage,
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB limit
@@ -124,7 +123,7 @@ const analyzeBillContent = async (content, contentType = 'image') => {
     }
 
     let messages;
-    
+
     if (contentType === 'image') {
       messages = [
         {
@@ -276,15 +275,16 @@ const analyzeBillContent = async (content, contentType = 'image') => {
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
       messages: messages,
-      max_tokens: 5000,
+      max_tokens: 16000,
       temperature: 0.1,
+      response_format: { type: "json_object" },
     });
 
     const extractedText = response.choices[0].message.content;
     if (!extractedText) {
       throw new Error('Received empty response from AI');
     }
-    
+
     // Try to parse JSON from the response
     let jsonMatch = extractedText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -390,7 +390,7 @@ const checkExistingData = async (extractedData) => {
             const existingPublisher = await prisma.bookPublisher.findFirst({
               where: { name: { contains: product.publisher } }
             });
-            
+
             if (existingPublisher) {
               publisherId = existingPublisher.id;
             } else {
@@ -409,7 +409,7 @@ const checkExistingData = async (extractedData) => {
             const existingCurrency = await prisma.productCurrency.findFirst({
               where: { name: { contains: product.currency } }
             });
-            
+
             if (existingCurrency) {
               currencyId = existingCurrency.id;
             } else {
@@ -440,7 +440,7 @@ const analyzeBill = async (req, res) => {
   try {
     // Check if OpenAI API key is configured
     if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === 'your_openai_api_key_here') {
-      return res.status(500).json({ 
+      return res.status(500).json({
         message: 'OpenAI API key is not configured. Please set OPENAI_API_KEY in your .env file.',
         error: 'Missing OpenAI API key configuration'
       });
@@ -499,7 +499,7 @@ const analyzeBill = async (req, res) => {
     // Remove duplicate products based on ISBN
     const uniqueProducts = [];
     const seenISBNs = new Set();
-    
+
     for (const product of allExtractedData.products) {
       if (product.isbn) {
         if (!seenISBNs.has(product.isbn)) {
@@ -524,7 +524,7 @@ const analyzeBill = async (req, res) => {
     res.json(response);
   } catch (error) {
     console.error('Error in analyzeBill:', error);
-    
+
     // Clean up uploaded files in case of error
     if (req.files) {
       req.files.forEach(file => {
@@ -533,8 +533,8 @@ const analyzeBill = async (req, res) => {
         }
       });
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       message: error.message || 'Failed to analyze bill',
       error: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
@@ -562,9 +562,9 @@ const analyzeNewItems = async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error('Error analyzing new items:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Failed to analyze new items',
-      error: error.message 
+      error: error.message
     });
   }
 };

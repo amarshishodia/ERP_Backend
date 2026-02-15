@@ -1,7 +1,6 @@
 const { getPagination } = require("../../../utils/query");
 const { getCompanyId } = require("../../../utils/company");
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const prisma = require("../../../utils/prisma");
 const { getObjectSignedUrl } = require("../../../utils/s3");
 
 const createSingleBookPublisher = async (req, res) => {

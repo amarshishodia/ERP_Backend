@@ -1,7 +1,6 @@
 var { expressjwt: jwt } = require("express-jwt");
 require("dotenv").config();
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const prisma = require("./prisma");
 const secret = process.env.JWT_SECRET;
 
 /**

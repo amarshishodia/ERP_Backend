@@ -1,5 +1,4 @@
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const prisma = require("../../../utils/prisma");
 const OpenAI = require('openai');
 const multer = require('multer');
 const path = require('path');

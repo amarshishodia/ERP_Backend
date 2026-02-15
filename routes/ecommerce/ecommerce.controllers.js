@@ -1,5 +1,4 @@
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const prisma = require("../../utils/prisma");
 const { v4: uuidv4 } = require("uuid");
 const path = require("path");
 const bcrypt = require("bcrypt");

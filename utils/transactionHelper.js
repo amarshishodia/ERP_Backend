@@ -1,5 +1,4 @@
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const prisma = require("./prisma");
 
 /**
  * Helper function to create a transaction with both main account IDs and sub-account IDs

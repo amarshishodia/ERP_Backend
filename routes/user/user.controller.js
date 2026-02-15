@@ -1,6 +1,5 @@
 const { getCompanyId } = require("../../utils/company");
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const prisma = require("../../utils/prisma");
 const cacheService = require("../../utils/cache");
 const { sendPasswordResetCode } = require("../../utils/mail");
 

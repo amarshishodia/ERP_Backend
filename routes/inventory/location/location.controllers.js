@@ -1,6 +1,5 @@
 const { getCompanyId } = require("../../../utils/company");
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const prisma = require("../../../utils/prisma");
 
 const getAllLocations = async (req, res) => {
   const companyId = await getCompanyId(req.auth.sub);
