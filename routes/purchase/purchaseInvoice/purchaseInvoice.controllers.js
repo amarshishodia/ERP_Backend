@@ -465,9 +465,10 @@ const getAllPurchaseInvoice = async (req, res) => {
           },
         }
       );
-      // calculate paid amount and due amount of individual purchase invoice from transactions and returnPurchaseInvoice and attach it to purchaseInvoices
+      // Use stored paid_amount and due_amount from DB so API matches table values.
+      // Optional: paid_amount_from_transactions / due_amount_computed can be added if needed for reporting.
       const allPurchaseInvoice = purchaseInvoices.map((item) => {
-        const paidAmount = transactions
+        const paidAmountFromTransactions = transactions
           .filter((transaction) => transaction.related_id === item.id)
           .reduce((acc, curr) => acc + curr.amount, 0);
         const paidAmountReturn = transactions2
@@ -482,17 +483,20 @@ const getAllPurchaseInvoice = async (req, res) => {
               returnPurchaseInvoice.purchaseInvoice_id === item.id
           )
           .reduce((acc, curr) => acc + curr.total_amount, 0);
+        const dueAmountComputed =
+          item.total_amount -
+          item.discount -
+          paidAmountFromTransactions -
+          returnAmount +
+          paidAmountReturn -
+          discountEarned;
         return {
           ...item,
-          paid_amount: paidAmount,
+          paid_amount: item.paid_amount,
           discount: item.discount + discountEarned,
-          due_amount:
-            item.total_amount -
-            item.discount -
-            paidAmount -
-            returnAmount +
-            paidAmountReturn -
-            discountEarned,
+          due_amount: item.due_amount,
+          paid_amount_from_transactions: paidAmountFromTransactions,
+          due_amount_computed: dueAmountComputed,
         };
       });
       // calculate total paid_amount and due_amount from allPurchaseInvoice and attach it to aggregations
