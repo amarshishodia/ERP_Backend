@@ -1,4 +1,6 @@
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
 const { updateSetting, getSetting } = require("./setting.controllers");
 const authorize = require("../../utils/authorize"); // authentication middleware
 
@@ -7,37 +9,37 @@ const multer = require("multer");
 
 const settingRoutes = express.Router();
 
-const logoRoutes = express.Router();
+const logoDir = path.join(__dirname, "logo");
+if (!fs.existsSync(logoDir)) {
+  fs.mkdirSync(logoDir, { recursive: true });
+}
 
-// generate random file name for extra security on naming
 const generateFileName = (bytes = 32) =>
   crypto.randomBytes(bytes).toString("hex");
 
-// store files upload folder in disk
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, "routes/setting/logo/");
+    cb(null, logoDir);
   },
   filename: function (req, file, cb) {
-    const uniqueSuffix = generateFileName();
-    cb(null, uniqueSuffix + ".jpg");
+    const ext = (file.originalname && path.extname(file.originalname)) || ".jpg";
+    cb(null, generateFileName() + ext);
   },
 });
-// multer middleware
-const upload = multer({ storage: storage });
+const upload = multer({ storage });
 
-// settingRoutes.put("/", authorize("updateSetting"), upload.single("image"), updateSetting);
-settingRoutes.put("/", authorize("updateSetting"), updateSetting);
-
+settingRoutes.put("/", authorize("updateSetting"), upload.single("image"), updateSetting);
 settingRoutes.get("/", authorize("viewSetting"), getSetting);
 
-// to serve image from disk
-logoRoutes.get("/:id", (req, res) => {
-    res.sendFile(__dirname + "/uploads/" + req.params.id, (err) => {
-      if (err) {
-        res.status(404).send("Not found");
-      }
-    });
+// serve logo image
+settingRoutes.get("/logo/:filename", (req, res) => {
+  const filePath = path.join(logoDir, req.params.filename);
+  if (!path.resolve(filePath).startsWith(path.resolve(logoDir))) {
+    return res.status(400).send("Invalid path");
+  }
+  res.sendFile(filePath, (err) => {
+    if (err) res.status(404).send("Not found");
   });
+});
 
 module.exports = settingRoutes;

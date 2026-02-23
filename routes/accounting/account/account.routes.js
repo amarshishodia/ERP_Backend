@@ -5,12 +5,14 @@ const {
   getSingleAccount,
   updateSingleAccount,
   deleteSingleAccount,
+  getPartyStatement,
 } = require("./account.controllers");
 const authorize = require("../../../utils/authorize"); // authentication middleware
 
 const accountRoutes = express.Router();
 
 accountRoutes.post("/", authorize("createTransaction"), createSingleAccount);
+accountRoutes.get("/party-statement", authorize("viewTransaction"), getPartyStatement);
 accountRoutes.get("/", authorize("viewTransaction"), getAllAccount);
 accountRoutes.get("/:id", authorize("viewTransaction"), getSingleAccount);
 accountRoutes.put("/:id", authorize("updateTransaction"), updateSingleAccount);

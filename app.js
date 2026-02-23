@@ -45,8 +45,12 @@ const tempIsbnRoutes = require("./routes/utils/tempIsbn.routes");
 // express app instance
 const app = express();
 
-// Initialize cache service
-cacheService.connect();
+// Initialize cache service and clear stale product list cache (key has no company_id; list now returns all products)
+cacheService.connect().then(() => {
+  cacheService.invalidateProductCache().then((ok) => {
+    if (ok) console.log('Product cache invalidated on startup');
+  });
+}).catch(() => {});
 
 // holds all the allowed origins for cors access
 let allowedOrigins = [

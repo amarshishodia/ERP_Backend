@@ -86,25 +86,18 @@ const createSingleProductCategory = async (req, res) => {
 };
 
 const getAllProductCategory = async (req, res) => {
-	// Get company_id from logged-in user
+	// Require logged-in user (company_id used for create/update/delete, not for list filter)
 	const companyId = await getCompanyId(req.auth.sub);
 	if (!companyId) {
 		return res.status(400).json({ error: "User company_id not found" });
 	}
 
+	// Return all product categories (all companies) - no company filter on list
 	if (req.query.query === "all") {
 		try {
-			// get all product_category for user's company
 			const getAllProductCategory = await prisma.product_category.findMany({
-				where: {
-					company_id: companyId,
-				},
-				orderBy: {
-					id: "asc",
-				},
-				include: {
-					product: true,
-				},
+				orderBy: { id: "asc" },
+				include: { product: true },
 			});
 			res.json(getAllProductCategory);
 		} catch (error) {
@@ -114,17 +107,9 @@ const getAllProductCategory = async (req, res) => {
 	} else {
 		const { skip, limit } = getPagination(req.query);
 		try {
-			// get all product_category paginated for user's company
 			const getAllProductCategory = await prisma.product_category.findMany({
-				where: {
-					company_id: companyId,
-				},
-				orderBy: {
-					id: "asc",
-				},
-				include: {
-					product: true,
-				},
+				orderBy: { id: "asc" },
+				include: { product: true },
 				skip: parseInt(skip),
 				take: parseInt(limit),
 			});
@@ -157,8 +142,9 @@ const getSingleProductCategory = async (req, res) => {
 			return res.status(404).json({ error: "Product category not found" });
 		}
 
-		// Verify that the product category belongs to the user's company
-		if (singleProductCategory.company_id !== companyId) {
+		// Verify that the product category belongs to the user's company (numeric comparison)
+		const companyIdNum = parseInt(companyId, 10);
+		if (Number(singleProductCategory.company_id) !== companyIdNum) {
 			return res.status(403).json({ error: "Product category does not belong to your company" });
 		}
 
@@ -193,7 +179,8 @@ const updateSingleProductCategory = async (req, res) => {
 			return res.status(404).json({ error: "Product category not found" });
 		}
 
-		if (existingProductCategory.company_id !== companyId) {
+		const companyIdNum = parseInt(companyId, 10);
+		if (Number(existingProductCategory.company_id) !== companyIdNum) {
 			return res.status(403).json({ error: "Product category does not belong to your company" });
 		}
 
@@ -230,7 +217,8 @@ const deleteSingleProductCategory = async (req, res) => {
 			return res.status(404).json({ error: "Product category not found" });
 		}
 
-		if (existingProductCategory.company_id !== companyId) {
+		const companyIdNum = parseInt(companyId, 10);
+		if (Number(existingProductCategory.company_id) !== companyIdNum) {
 			return res.status(403).json({ error: "Product category does not belong to your company" });
 		}
 

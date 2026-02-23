@@ -13,45 +13,83 @@ const createPaymentPurchaseInvoice = async (req, res) => {
       return res.status(400).json({ error: "User company_id not found" });
     }
 
-    // convert all incoming data to a specific format.
+    const invoiceId = parseInt(req.body.purchase_invoice_no, 10);
+    if (!invoiceId) {
+      return res.status(400).json({ error: "Purchase invoice ID is required" });
+    }
+
+    // Ensure invoice exists and belongs to company
+    const invoice = await prisma.purchaseInvoice.findUnique({
+      where: { id: invoiceId },
+      select: { id: true, company_id: true, paid_amount: true, due_amount: true },
+    });
+    if (!invoice) {
+      return res.status(404).json({ error: "Purchase invoice not found" });
+    }
+    const companyIdNum = parseInt(companyId, 10);
+    if (Number(invoice.company_id) !== companyIdNum) {
+      return res.status(403).json({ error: "Purchase invoice does not belong to your company" });
+    }
+
     const date = new Date(req.body.date).toISOString().split("T")[0];
-    // paid amount against purchase invoice using a transaction
+    const paymentAmount = parseFloat(req.body.amount) || 0;
+    const discountAmount = parseFloat(req.body.discount) || 0;
+    const totalPayment = paymentAmount + discountAmount;
+
+    if (totalPayment <= 0) {
+      return res.status(400).json({ error: "Amount must be greater than 0" });
+    }
+
+    // Create transaction for the payment (use connect for debit/credit relations)
     const transaction1 = await prisma.transaction.create({
       data: {
         date: new Date(date),
-        debit_id: 5,
-        credit_id: 1,
-        amount: parseFloat(req.body.amount),
-        particulars: `Due pay of Purchase Invoice #${req.body.purchase_invoice_no}`,
+        amount: paymentAmount,
+        particulars: `Due pay of Purchase Invoice #${invoiceId}`,
         type: "purchase",
-        related_id: parseInt(req.body.purchase_invoice_no),
+        related_id: invoiceId,
         payment_method: req.body.payment_method || null,
         reference_number: req.body.reference_number || null,
+        debit: { connect: { id: 5 } },
+        credit: { connect: { id: 1 } },
         company: {
           connect: { id: companyId },
         },
       },
     });
-    // discount earned using a transaction
+
     let transaction2;
-    if (req.body.discount > 0) {
+    if (discountAmount > 0) {
       transaction2 = await prisma.transaction.create({
         data: {
           date: new Date(date),
-          debit_id: 5,
-          credit_id: 13,
-          amount: parseFloat(req.body.discount),
-          particulars: `Discount earned of Purchase Invoice #${req.body.purchase_invoice_no}`,
+          amount: discountAmount,
+          particulars: `Discount earned of Purchase Invoice #${invoiceId}`,
           type: "purchase",
-          related_id: parseInt(req.body.purchase_invoice_no),
+          related_id: invoiceId,
           payment_method: req.body.payment_method || null,
           reference_number: req.body.reference_number || null,
+          debit: { connect: { id: 5 } },
+          credit: { connect: { id: 13 } },
           company: {
             connect: { id: companyId },
           },
         },
       });
     }
+
+    // Update purchase invoice paid_amount and due_amount so list/detail reflect the payment
+    const newPaidAmount = parseFloat(invoice.paid_amount) + totalPayment;
+    const newDueAmount = Math.max(0, parseFloat(invoice.due_amount) - totalPayment);
+
+    await prisma.purchaseInvoice.update({
+      where: { id: invoiceId },
+      data: {
+        paid_amount: newPaidAmount,
+        due_amount: newDueAmount,
+      },
+    });
+
     res.status(200).json({ transaction1, transaction2 });
   } catch (error) {
     res.status(400).json(error.message);

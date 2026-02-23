@@ -127,15 +127,25 @@ const getAllBookPublishers = async (req, res) => {
 		}
 	} else {
 		const { skip, limit } = getPagination(req.query);
+		const where = {};
+		const name = (req.query.name || "").trim();
+		const address = (req.query.address || "").trim();
+		const phone = (req.query.phone || "").trim();
+		const email = (req.query.email || "").trim();
+		if (name) where.name = { contains: name };
+		if (address) where.address = { contains: address };
+		if (phone) where.phone = { contains: phone };
+		if (email) where.email = { contains: email };
 		try {
 			const [data, total] = await Promise.all([
 				prisma.book_publisher.findMany({
+					where,
 					orderBy: { id: "asc" },
 					include: { product: true },
 					skip: parseInt(skip),
 					take: parseInt(limit),
 				}),
-				prisma.book_publisher.count(),
+				prisma.book_publisher.count({ where }),
 			]);
 			res.json({ data, total });
 		} catch (error) {

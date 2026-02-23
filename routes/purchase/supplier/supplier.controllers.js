@@ -31,42 +31,51 @@ const createSingleSupplier = async (req, res) => {
       const rows = Array.isArray(req.body) ? req.body : [];
 
       if (upsert && rows.length > 0) {
-        // Add or edit: upsert by phone (update if exists, create if not)
+        // Add or edit: upsert by phone when provided (update if exists, create if not)
         let created = 0;
         let updated = 0;
         for (const row of rows) {
           const name = String(row.name || "").trim();
-          const phone = String(row.phone || "").trim();
-          const address = String(row.address || "").trim();
-          if (!name || !phone || !address) continue;
-          const existing = await prisma.supplier.findUnique({
-            where: {
-              phone_company_id: { phone, company_id: companyId },
-            },
-          });
-          if (existing) {
-            await prisma.supplier.update({
-              where: { id: existing.id },
-              data: { name, address },
+          const phone = String(row.phone || "").trim() || null;
+          const address = String(row.address || "").trim() || null;
+          if (!name) continue;
+          if (phone) {
+            const existing = await prisma.supplier.findUnique({
+              where: {
+                phone_company_id: { phone, company_id: companyId },
+              },
             });
-            updated += 1;
+            if (existing) {
+              await prisma.supplier.update({
+                where: { id: existing.id },
+                data: { name, address },
+              });
+              updated += 1;
+            } else {
+              await prisma.supplier.create({
+                data: { name, phone, address, company_id: companyId },
+              });
+              created += 1;
+            }
           } else {
             await prisma.supplier.create({
-              data: { name, phone, address, company_id: companyId },
+              data: { name, phone: null, address, company_id: companyId },
             });
             created += 1;
           }
         }
         res.json({ created, updated, message: `Created ${created}, updated ${updated}` });
       } else {
-        // create many only (skip duplicates)
+        // create many only (name required; phone and address optional)
         const createdSupplier = await prisma.supplier.createMany({
-          data: rows.map((supplier) => ({
-            name: String(supplier.name || "").trim(),
-            phone: String(supplier.phone || "").trim(),
-            address: String(supplier.address || "").trim(),
-            company_id: companyId,
-          })).filter((s) => s.name && s.phone && s.address),
+          data: rows
+            .map((supplier) => ({
+              name: String(supplier.name || "").trim(),
+              phone: String(supplier.phone || "").trim() || null,
+              address: String(supplier.address || "").trim() || null,
+              company_id: companyId,
+            }))
+            .filter((s) => s.name),
           skipDuplicates: true,
         });
         res.json(createdSupplier);
@@ -77,12 +86,12 @@ const createSingleSupplier = async (req, res) => {
     }
   } else {
     try {
-      // create a single supplier from an object with company_id
+      // create a single supplier (phone and address optional)
       const createdSupplier = await prisma.supplier.create({
         data: {
           name: req.body.name,
-          phone: req.body.phone,
-          address: req.body.address,
+          phone: req.body.phone != null && String(req.body.phone).trim() !== "" ? String(req.body.phone).trim() : null,
+          address: req.body.address != null && String(req.body.address).trim() !== "" ? String(req.body.address).trim() : null,
           company_id: companyId,
         },
       });
@@ -480,8 +489,8 @@ const updateSingleSupplier = async (req, res) => {
       },
       data: {
         name: req.body.name,
-        phone: req.body.phone,
-        address: req.body.address,
+        phone: req.body.phone != null && String(req.body.phone).trim() !== "" ? String(req.body.phone).trim() : null,
+        address: req.body.address != null && String(req.body.address).trim() !== "" ? String(req.body.address).trim() : null,
       },
     });
     res.json(updatedSupplier);

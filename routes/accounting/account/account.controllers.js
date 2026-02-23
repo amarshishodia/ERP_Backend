@@ -221,7 +221,8 @@ const getAllAccount = async (req, res) => {
       res.status(400).json({ error: error.message });
       console.log(error.message);
     }
-  } else if (req.query.query === "is") {
+  } else if (req.query.query === "is" || req.query.query === "pl") {
+    // Income Statement and Profit & Loss use same data (Revenue - Expense = Profit/Loss)
     try {
       const allAccount = await prisma.account.findMany({
         where: {
@@ -355,6 +356,61 @@ const getAllAccount = async (req, res) => {
       res.status(400).json(error.message);
       console.log(error.message);
     }
+  } else if (req.query.query === "party-wise-pl") {
+    // Party-wise Profit and Loss: customers (sales + profit), suppliers (purchases)
+    try {
+      const saleInvoices = await prisma.saleInvoice.findMany({
+        where: { company_id: companyId },
+        select: {
+          customer_id: true,
+          total_amount: true,
+          profit: true,
+          customer: { select: { id: true, name: true } },
+        },
+      });
+      const purchaseInvoices = await prisma.purchaseInvoice.findMany({
+        where: { company_id: companyId },
+        select: {
+          supplier_id: true,
+          total_amount: true,
+          supplier: { select: { id: true, name: true } },
+        },
+      });
+      const customerMap = new Map();
+      saleInvoices.forEach((inv) => {
+        const key = inv.customer_id;
+        if (!customerMap.has(key)) {
+          customerMap.set(key, {
+            id: inv.customer?.id,
+            name: inv.customer?.name ?? "N/A",
+            totalSales: 0,
+            profit: 0,
+          });
+        }
+        const row = customerMap.get(key);
+        row.totalSales += Number(inv.total_amount);
+        row.profit += Number(inv.profit ?? 0);
+      });
+      const supplierMap = new Map();
+      purchaseInvoices.forEach((inv) => {
+        const key = inv.supplier_id;
+        if (!supplierMap.has(key)) {
+          supplierMap.set(key, {
+            id: inv.supplier?.id,
+            name: inv.supplier?.name ?? "N/A",
+            totalPurchases: 0,
+          });
+        }
+        supplierMap.get(key).totalPurchases += Number(inv.total_amount);
+      });
+      res.json({
+        customerWise: Array.from(customerMap.values()),
+        supplierWise: Array.from(supplierMap.values()),
+      });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+      console.log(error.message);
+    }
   } else {
     try {
       const allAccount = await prisma.account.findMany({
@@ -470,10 +526,97 @@ const deleteSingleAccount = async (req, res) => {
   }
 };
 
+const getPartyStatement = async (req, res) => {
+  try {
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+    const { type, id: partyId, fromDate, toDate } = req.query;
+    if (!type || !partyId) {
+      return res.status(400).json({ error: "type (customer|supplier) and id are required" });
+    }
+    const id = Number(partyId);
+    if (type === "customer") {
+      const customer = await prisma.customer.findFirst({
+        where: { id, company_id: companyId },
+        select: { id: true, name: true, phone: true, address: true },
+      });
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+      const where = { customer_id: id, company_id: companyId };
+      if (fromDate || toDate) {
+        where.date = {};
+        if (fromDate) where.date.gte = new Date(fromDate);
+        if (toDate) where.date.lte = new Date(toDate);
+      }
+      const invoices = await prisma.saleInvoice.findMany({
+        where,
+        orderBy: { date: "asc" },
+        select: {
+          id: true,
+          date: true,
+          invoice_number: true,
+          total_amount: true,
+          paid_amount: true,
+          due_amount: true,
+          prefix: true,
+        },
+      });
+      const totalOutstanding = invoices.reduce((sum, inv) => sum + Number(inv.due_amount), 0);
+      return res.json({
+        party: customer,
+        partyType: "customer",
+        invoices,
+        totalOutstanding,
+      });
+    }
+    if (type === "supplier") {
+      const supplier = await prisma.supplier.findFirst({
+        where: { id, company_id: companyId },
+        select: { id: true, name: true, phone: true, address: true },
+      });
+      if (!supplier) {
+        return res.status(404).json({ error: "Supplier not found" });
+      }
+      const where = { supplier_id: id, company_id: companyId };
+      if (fromDate || toDate) {
+        where.date = {};
+        if (fromDate) where.date.gte = new Date(fromDate);
+        if (toDate) where.date.lte = new Date(toDate);
+      }
+      const invoices = await prisma.purchaseInvoice.findMany({
+        where,
+        orderBy: { date: "asc" },
+        select: {
+          id: true,
+          date: true,
+          total_amount: true,
+          paid_amount: true,
+          due_amount: true,
+        },
+      });
+      const totalOutstanding = invoices.reduce((sum, inv) => sum + Number(inv.due_amount), 0);
+      return res.json({
+        party: supplier,
+        partyType: "supplier",
+        invoices,
+        totalOutstanding,
+      });
+    }
+    return res.status(400).json({ error: "type must be customer or supplier" });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+    console.log(error.message);
+  }
+};
+
 module.exports = {
   createSingleAccount,
   getAllAccount,
   getSingleAccount,
   updateSingleAccount,
   deleteSingleAccount,
+  getPartyStatement,
 };

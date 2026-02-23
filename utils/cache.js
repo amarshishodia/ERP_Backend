@@ -23,6 +23,7 @@ class CacheService {
       });
 
       await this.client.connect();
+      this.isConnected = true;
     } catch (error) {
       console.log('Redis connection failed:', error.message);
       this.isConnected = false;
@@ -80,7 +81,8 @@ class CacheService {
     }
   }
 
-  // Product-specific cache methods
+  // Product list cache: NOT used for GET /v1/product?query=all (see product.controllers.js).
+  // Key has no company_id, so we always fetch from DB to return all products with correct company stock.
   async getProducts(page = 1, limit = 50, status = true) {
     const key = `products:${status}:${page}:${limit}`;
     return await this.get(key);

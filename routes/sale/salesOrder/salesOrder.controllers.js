@@ -156,13 +156,10 @@ const createSalesOrder = async (req, res) => {
 
     const finalTotal = totalAmount;
 
-    // Generate order number if not provided
+    // Generate order number if not provided (timestamp + random suffix for uniqueness without relying on count)
     let orderNumber = order_number;
     if (!orderNumber) {
-      const count = await prisma.sales_order.count({
-        where: { company_id: companyId },
-      });
-      orderNumber = `SO-${Date.now()}-${count + 1}`;
+      orderNumber = `SO-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     }
 
     // Check if order number already exists
@@ -633,7 +630,16 @@ const deleteSalesOrder = async (req, res) => {
   }
 };
 
-// Update Order Item Fulfillment
+// Helper to compute item total_amount from sale_price, ordered_quantity, item discount, order discount
+const computeItemTotalAmount = (salePrice, orderedQuantity, itemDiscountPercent, orderDiscountPercent) => {
+  const itemTotal = parseFloat(salePrice) * parseFloat(orderedQuantity);
+  const itemDiscount = (itemTotal * parseFloat(itemDiscountPercent || 0)) / 100;
+  const itemAfterProductDiscount = itemTotal - itemDiscount;
+  const billDiscountAmount = (itemAfterProductDiscount * parseFloat(orderDiscountPercent || 0)) / 100;
+  return itemAfterProductDiscount - billDiscountAmount;
+};
+
+// Update Order Item Fulfillment (and optionally sale_price). Accepts single item or items array.
 const updateOrderItemFulfillment = async (req, res) => {
   try {
     const companyId = await getCompanyId(req.auth.sub);
@@ -642,7 +648,7 @@ const updateOrderItemFulfillment = async (req, res) => {
     }
 
     const { id } = req.params;
-    const { item_id, fulfilled_quantity } = req.body;
+    const { item_id, fulfilled_quantity, sale_price, items } = req.body;
 
     const order = await prisma.sales_order.findFirst({
       where: {
@@ -658,31 +664,59 @@ const updateOrderItemFulfillment = async (req, res) => {
       return res.status(404).json({ error: "Sales order not found" });
     }
 
-    const item = order.order_items.find(i => i.id === Number(item_id));
-    if (!item) {
-      return res.status(404).json({ error: "Order item not found" });
+    const billDiscountPercent = parseFloat(order.discount || 0);
+    const updates = Array.isArray(items) && items.length > 0
+      ? items.map((i) => ({
+          item_id: i.item_id,
+          fulfilled_quantity: i.fulfilled_quantity,
+          sale_price: i.sale_price,
+        }))
+      : [{ item_id, fulfilled_quantity, sale_price }];
+
+    for (const u of updates) {
+      if (u.item_id == null) continue;
+      const item = order.order_items.find((i) => i.id === Number(u.item_id));
+      if (!item) continue;
+
+      const data = {};
+      if (u.fulfilled_quantity !== undefined && u.fulfilled_quantity !== null) {
+        data.fulfilled_quantity = Math.min(
+          Math.max(0, Number(u.fulfilled_quantity)),
+          item.ordered_quantity
+        );
+      }
+      if (u.sale_price !== undefined && u.sale_price !== null) {
+        const newPrice = parseFloat(u.sale_price);
+        if (!Number.isNaN(newPrice) && newPrice >= 0) {
+          data.sale_price = newPrice;
+          data.total_amount = computeItemTotalAmount(
+            newPrice,
+            item.ordered_quantity,
+            item.discount,
+            billDiscountPercent
+          );
+        }
+      }
+      if (Object.keys(data).length > 0) {
+        await prisma.sales_order_item.update({
+          where: { id: Number(u.item_id) },
+          data,
+        });
+      }
     }
 
-    const newFulfilledQty = Math.min(
-      Math.max(0, Number(fulfilled_quantity)),
-      item.ordered_quantity
-    );
-
-    await prisma.sales_order_item.update({
-      where: { id: Number(item_id) },
-      data: { fulfilled_quantity: newFulfilledQty },
-    });
-
-    // Recalculate order status
+    // Recalculate order total and status from current DB state
     const updatedOrder = await prisma.sales_order.findUnique({
       where: { id: Number(id) },
       include: { order_items: true },
     });
 
+    const newTotal = updatedOrder.order_items.reduce((sum, i) => sum + (i.total_amount || 0), 0);
     const newStatus = calculateOrderStatus(updatedOrder.order_items);
+
     await prisma.sales_order.update({
       where: { id: Number(id) },
-      data: { status: newStatus },
+      data: { total_amount: newTotal, status: newStatus },
     });
 
     res.json({ success: true, message: "Fulfillment updated successfully" });

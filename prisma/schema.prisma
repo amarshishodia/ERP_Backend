@@ -184,8 +184,8 @@ model product_currency_rate {
 model supplier {
   id              Int               @id @default(autoincrement())
   name            String
-  phone           String
-  address         String
+  phone           String?
+  address         String?
   company_id      Int
   status          Boolean           @default(true)
   created_at      DateTime          @default(now())
@@ -203,6 +203,8 @@ model supplier {
 model purchaseInvoice {
   id                     Int                      @id @default(autoincrement())
   date                   DateTime
+  invoice_number         Int?
+  prefix                 String?
   total_amount           Float
   discount               Float
   paid_amount            Float
@@ -590,6 +592,7 @@ model appSetting {
   sale_invoice_prefix String? @default("INV/25-26/")
   quotation_prefix   String? @default("QTN/25-26/")
   challan_prefix      String? @default("CHL/25-26/")
+  purchase_invoice_prefix String? @default("PINV/25-26/")
   sale_invoice_terms  String? @db.LongText
   quotation_terms     String? @db.LongText
   challan_terms       String? @db.LongText

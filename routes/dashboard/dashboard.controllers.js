@@ -191,13 +191,24 @@ const getDashboardData = async (req, res) => {
 				profit: true,
 			},
 		});
-		// concat 2 object
+		// Customer, supplier, product counts (for dashboard cards)
+		const [customerCount, supplierCount, productCount] = await Promise.all([
+			prisma.customer.count({ where: { company_id: companyId, status: true } }),
+			prisma.supplier.count({ where: { company_id: companyId, status: true } }),
+			prisma.product.count({ where: { status: true } }),
+		]);
+
 		const cardInfo = {
 			purchase_count: purchaseInfo._count.id,
 			purchase_total: Number(purchaseInfo._sum.total_amount),
+			purchase_due: Number(purchaseInfo._sum.due_amount ?? 0),
 			sale_count: saleInfo._count.id,
 			sale_total: Number(saleInfo._sum.total_amount),
+			sale_due: Number(saleInfo._sum.due_amount ?? 0),
 			sale_profit: Number(saleInfo._sum.profit),
+			customer_count: customerCount,
+			supplier_count: supplierCount,
+			product_count: productCount,
 		};
 		res.json({
 			saleProfitCount,

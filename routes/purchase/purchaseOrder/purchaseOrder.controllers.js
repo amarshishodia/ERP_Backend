@@ -185,13 +185,10 @@ const createPurchaseOrder = async (req, res) => {
 
     const finalTotal = totalAmount;
 
-    // Generate order number if not provided
+    // Generate order number if not provided (timestamp + random for uniqueness)
     let orderNumber = order_number;
     if (!orderNumber) {
-      const count = await prisma.purchase_order.count({
-        where: { company_id: companyId },
-      });
-      orderNumber = `PO-${Date.now()}-${count + 1}`;
+      orderNumber = `PO-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     }
 
     // Check if order number already exists
@@ -687,7 +684,16 @@ const deletePurchaseOrder = async (req, res) => {
   }
 };
 
-// Update Purchase Order Item Received Quantity
+// Helper to compute purchase order item total_amount from price, qty, item discount, order discount
+const computePurchaseItemTotalAmount = (purchasePrice, orderedQuantity, itemDiscountPercent, orderDiscountPercent) => {
+  const itemTotal = parseFloat(purchasePrice) * parseFloat(orderedQuantity);
+  const itemDiscount = (itemTotal * parseFloat(itemDiscountPercent || 0)) / 100;
+  const itemAfterProductDiscount = itemTotal - itemDiscount;
+  const billDiscountAmount = (itemAfterProductDiscount * parseFloat(orderDiscountPercent || 0)) / 100;
+  return itemAfterProductDiscount - billDiscountAmount;
+};
+
+// Update Purchase Order Item Received Quantity (and optionally purchase_price). Single item or items array.
 const updatePurchaseOrderItemReceived = async (req, res) => {
   try {
     const companyId = await getCompanyId(req.auth.sub);
@@ -696,7 +702,7 @@ const updatePurchaseOrderItemReceived = async (req, res) => {
     }
 
     const { id } = req.params;
-    const { item_id, received_quantity } = req.body;
+    const { item_id, received_quantity, purchase_price, items } = req.body;
 
     const order = await prisma.purchase_order.findFirst({
       where: {
@@ -712,31 +718,58 @@ const updatePurchaseOrderItemReceived = async (req, res) => {
       return res.status(404).json({ error: "Purchase order not found" });
     }
 
-    const item = order.order_items.find(i => i.id === Number(item_id));
-    if (!item) {
-      return res.status(404).json({ error: "Order item not found" });
+    const billDiscountPercent = parseFloat(order.discount || 0);
+    const updates = Array.isArray(items) && items.length > 0
+      ? items.map((i) => ({
+          item_id: i.item_id,
+          received_quantity: i.received_quantity,
+          purchase_price: i.purchase_price,
+        }))
+      : [{ item_id, received_quantity, purchase_price }];
+
+    for (const u of updates) {
+      if (u.item_id == null) continue;
+      const item = order.order_items.find((i) => i.id === Number(u.item_id));
+      if (!item) continue;
+
+      const data = {};
+      if (u.received_quantity !== undefined && u.received_quantity !== null) {
+        data.received_quantity = Math.min(
+          Math.max(0, Number(u.received_quantity)),
+          item.ordered_quantity
+        );
+      }
+      if (u.purchase_price !== undefined && u.purchase_price !== null) {
+        const newPrice = parseFloat(u.purchase_price);
+        if (!Number.isNaN(newPrice) && newPrice >= 0) {
+          data.purchase_price = newPrice;
+          data.total_amount = computePurchaseItemTotalAmount(
+            newPrice,
+            item.ordered_quantity,
+            item.discount,
+            billDiscountPercent
+          );
+        }
+      }
+      if (Object.keys(data).length > 0) {
+        await prisma.purchase_order_item.update({
+          where: { id: Number(u.item_id) },
+          data,
+        });
+      }
     }
 
-    const newReceivedQty = Math.min(
-      Math.max(0, Number(received_quantity)),
-      item.ordered_quantity
-    );
-
-    await prisma.purchase_order_item.update({
-      where: { id: Number(item_id) },
-      data: { received_quantity: newReceivedQty },
-    });
-
-    // Recalculate order status
     const updatedOrder = await prisma.purchase_order.findUnique({
       where: { id: Number(id) },
       include: { order_items: true },
     });
 
+    const newTotal = updatedOrder.order_items.reduce((sum, i) => sum + (i.total_amount || 0), 0);
     const newStatus = calculatePurchaseOrderStatus(updatedOrder.order_items);
+
     await prisma.purchase_order.update({
       where: { id: Number(id) },
-      data: { status: newStatus },
+      data: { total_amount: newTotal, status: newStatus },
     });
 
     res.json({ success: true, message: "Received quantity updated successfully" });

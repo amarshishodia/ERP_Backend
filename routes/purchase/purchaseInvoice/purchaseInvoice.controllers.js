@@ -86,12 +86,30 @@ const createSinglePurchaseInvoice = async (req, res) => {
   }
 
   try {
+    const companyIdNum = parseInt(companyId, 10);
+    // Get company's purchase invoice prefix from settings
+    const appSetting = await prisma.appSetting.findUnique({
+      where: { id: companyIdNum },
+      select: { purchase_invoice_prefix: true },
+    });
+    const purchasePrefix = (appSetting?.purchase_invoice_prefix || "PINV/25-26/").trim() || "PINV/25-26/";
+
+    // Next invoice number: max invoice_number for this company with this prefix + 1
+    const lastInvoice = await prisma.purchaseInvoice.findFirst({
+      where: { company_id: companyIdNum, prefix: purchasePrefix },
+      orderBy: { invoice_number: "desc" },
+      select: { invoice_number: true },
+    });
+    const nextInvoiceNumber = (lastInvoice?.invoice_number != null ? lastInvoice.invoice_number + 1 : 1);
+
     // convert all incoming data to a specific format.
     const date = new Date(req.body.date).toISOString().split("T")[0];
     // create purchase invoice
     const createdInvoice = await prisma.purchaseInvoice.create({
       data: {
         date: new Date(date),
+        prefix: purchasePrefix,
+        invoice_number: nextInvoiceNumber,
         total_amount: finalTotal,
         discount: billDiscount,
         paid_amount: paidAmount,
@@ -644,43 +662,23 @@ const getSinglePurchaseInvoice = async (req, res) => {
         },
       },
     });
-    // sum of total paid amount
-    const totalPaidAmount = transactions2.reduce(
-      (acc, item) => acc + item.amount,
-      0
-    );
-    // sum of total discount earned amount
-    const totalDiscountAmount = transactions3.reduce(
-      (acc, item) => acc + item.amount,
-      0
-    );
-    // sum of total return purchase invoice amount
-    const paidAmountReturn = transactions4.reduce(
-      (acc, curr) => acc + curr.amount,
-      0
-    );
     // sum total amount of all return purchase invoice related to this purchase invoice
     const totalReturnAmount = returnPurchaseInvoice.reduce(
       (acc, item) => acc + item.total_amount,
       0
     );
-    console.log(singlePurchaseInvoice.total_amount);
-    console.log(singlePurchaseInvoice.discount);
-    console.log(totalPaidAmount);
-    console.log(totalDiscountAmount);
-    console.log(totalReturnAmount);
-    console.log(paidAmountReturn);
-    const dueAmount =
-      singlePurchaseInvoice.total_amount -
-      singlePurchaseInvoice.discount -
-      totalPaidAmount -
-      totalDiscountAmount -
-      totalReturnAmount +
-      paidAmountReturn;
+
+    // Use stored paid_amount and due_amount from invoice (updated on each payment) for correct display
+    const totalPaidAmount = parseFloat(singlePurchaseInvoice.paid_amount) || 0;
+    const dueAmount = parseFloat(singlePurchaseInvoice.due_amount) || 0;
+
     let status = "UNPAID";
-    if (dueAmount === 0) {
+    if (dueAmount <= 0) {
       status = "PAID";
+    } else if (totalPaidAmount > 0) {
+      status = "PARTIAL PAID";
     }
+
     res.json({
       status,
       totalPaidAmount,
@@ -696,8 +694,111 @@ const getSinglePurchaseInvoice = async (req, res) => {
   }
 };
 
+const updateSinglePurchaseInvoice = async (req, res) => {
+  const companyId = await getCompanyId(req.auth.sub);
+  if (!companyId) {
+    return res.status(400).json({ error: "User company_id not found" });
+  }
+
+  const invoiceId = Number(req.params.id);
+  const existing = await prisma.purchaseInvoice.findUnique({
+    where: { id: invoiceId },
+    select: { id: true, company_id: true },
+  });
+  if (!existing) {
+    return res.status(404).json({ error: "Purchase invoice not found" });
+  }
+  if (existing.company_id !== companyId) {
+    return res.status(403).json({ error: "Purchase invoice does not belong to your company" });
+  }
+
+  const supplier = await prisma.supplier.findUnique({
+    where: { id: Number(req.body.supplier_id) },
+    select: { company_id: true },
+  });
+  if (!supplier) {
+    return res.status(404).json({ error: "Supplier not found" });
+  }
+  if (supplier.company_id !== companyId) {
+    return res.status(403).json({ error: "Supplier does not belong to your company" });
+  }
+
+  const productIds = req.body.purchaseInvoiceProduct.map(p => Number(p.product_id));
+  const products = await prisma.product.findMany({
+    where: { id: { in: productIds } },
+    select: { id: true },
+  });
+  if (products.length !== productIds.length) {
+    return res.status(404).json({ error: "Some products not found" });
+  }
+
+  let totalPurchasePrice = 0;
+  let totalProductDiscount = 0;
+  req.body.purchaseInvoiceProduct.forEach((item) => {
+    const itemTotal = parseFloat(item.product_purchase_price) * parseFloat(item.product_quantity);
+    const itemDiscount = (itemTotal * parseFloat(item.product_purchase_discount || 0)) / 100;
+    totalPurchasePrice += itemTotal;
+    totalProductDiscount += itemDiscount;
+  });
+
+  const subtotalAfterProductDiscounts = totalPurchasePrice - totalProductDiscount;
+  const billDiscount = parseFloat(req.body.discount || 0);
+  const roundOffAmount = req.body.round_off_enabled ? parseFloat(req.body.round_off_amount || 0) : 0;
+  const paidAmount = parseFloat(req.body.paid_amount || 0);
+  const finalTotal = subtotalAfterProductDiscounts + roundOffAmount;
+  const dueAmount = finalTotal - billDiscount - paidAmount;
+
+  const sales_order_id = req.body.sales_order_id ? Number(req.body.sales_order_id) : null;
+  const purchase_order_id = req.body.purchase_order_id ? Number(req.body.purchase_order_id) : null;
+
+  try {
+    const date = new Date(req.body.date).toISOString().split("T")[0];
+    await prisma.purchaseInvoiceProduct.deleteMany({
+      where: { invoice_id: invoiceId },
+    });
+    const updatedInvoice = await prisma.purchaseInvoice.update({
+      where: { id: invoiceId },
+      data: {
+        date: new Date(date),
+        total_amount: finalTotal,
+        discount: billDiscount,
+        paid_amount: paidAmount,
+        due_amount: dueAmount,
+        total_product_discount: totalProductDiscount,
+        round_off_enabled: req.body.round_off_enabled || false,
+        round_off_amount: roundOffAmount,
+        sales_order_id: sales_order_id ?? null,
+        purchase_order_id: purchase_order_id ?? null,
+        supplier_id: Number(req.body.supplier_id),
+        note: req.body.note || null,
+        supplier_memo_no: req.body.supplier_memo_no || null,
+        purchaseInvoiceProduct: {
+          create: req.body.purchaseInvoiceProduct.map((product) => ({
+            product_id: Number(product.product_id),
+            product_quantity: Number(product.product_quantity),
+            product_purchase_price: parseFloat(product.product_purchase_price),
+            product_purchase_discount: parseFloat(product.product_purchase_discount || 0),
+          })),
+        },
+      },
+      include: {
+        supplier: true,
+        purchaseInvoiceProduct: { include: { product: true } },
+      },
+    });
+    res.json({
+      updatedInvoice,
+      supplier: updatedInvoice.supplier,
+    });
+  } catch (error) {
+    res.status(400).json(error.message);
+    console.log(error.message);
+  }
+};
+
 module.exports = {
   createSinglePurchaseInvoice,
   getAllPurchaseInvoice,
   getSinglePurchaseInvoice,
+  updateSinglePurchaseInvoice,
 };

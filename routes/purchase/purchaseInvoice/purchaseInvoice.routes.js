@@ -3,6 +3,7 @@ const {
   createSinglePurchaseInvoice,
   getAllPurchaseInvoice,
   getSinglePurchaseInvoice,
+  updateSinglePurchaseInvoice,
 } = require("./purchaseInvoice.controllers");
 const {
   upload,
@@ -16,6 +17,7 @@ const purchaseInvoiceRoutes = express.Router();
 purchaseInvoiceRoutes.post(  "/",  authorize("createPurchaseInvoice"),  createSinglePurchaseInvoice);
 purchaseInvoiceRoutes.get(  "/",  authorize("viewPurchaseInvoice"),  getAllPurchaseInvoice);
 purchaseInvoiceRoutes.get(  "/:id",  authorize("viewPurchaseInvoice"),  getSinglePurchaseInvoice);
+purchaseInvoiceRoutes.put(  "/:id",  authorize("createPurchaseInvoice"),  updateSinglePurchaseInvoice);
 purchaseInvoiceRoutes.post(  "/analyze-bill",  authorize("createPurchaseInvoice"),  upload.array('files', 10),  analyzeBill);
 purchaseInvoiceRoutes.post(  "/analyze-new-items",  authorize("createPurchaseInvoice"),  analyzeNewItems);
 

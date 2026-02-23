@@ -3,10 +3,103 @@ const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
 
 const createSingleDiscountMaster = async (req, res) => {
-  // Get company_id from logged-in user
   const companyId = await getCompanyId(req.auth.sub);
   if (!companyId) {
     return res.status(400).json({ error: "User company_id not found" });
+  }
+
+  if (req.query.query === "createmany" && Array.isArray(req.body)) {
+    let created = 0;
+    const errors = [];
+    for (let i = 0; i < req.body.length; i++) {
+      const row = req.body[i];
+      try {
+        const discount_type = row.discount_type;
+        const publisher_id = row.publisher_id;
+        const customer_id = row.customer_id ?? null;
+        const supplier_id = row.supplier_id ?? null;
+        const discount_value = parseFloat(row.discount_value);
+        const discount_unit = row.discount_unit || "percentage";
+        const status = row.status !== undefined ? Boolean(row.status) : true;
+        const effective_from = row.effective_from ? new Date(row.effective_from) : null;
+        const effective_to = row.effective_to ? new Date(row.effective_to) : null;
+        const description = row.description || null;
+
+        if (!["sale", "purchase"].includes(discount_type)) {
+          errors.push({ row: i + 1, error: "Invalid discount_type" });
+          continue;
+        }
+        if (!["percentage", "fixed"].includes(discount_unit)) {
+          errors.push({ row: i + 1, error: "Invalid discount_unit" });
+          continue;
+        }
+        if (!publisher_id) {
+          errors.push({ row: i + 1, error: "Publisher is required" });
+          continue;
+        }
+        const publisher = await prisma.book_publisher.findFirst({
+          where: { id: Number(publisher_id), company_id: companyId },
+        });
+        if (!publisher) {
+          errors.push({ row: i + 1, error: "Publisher not found" });
+          continue;
+        }
+        if (discount_type === "sale" && !customer_id) {
+          errors.push({ row: i + 1, error: "Customer is required for sale" });
+          continue;
+        }
+        if (discount_type === "purchase" && !supplier_id) {
+          errors.push({ row: i + 1, error: "Supplier is required for purchase" });
+          continue;
+        }
+        if (discount_type === "sale" && customer_id) {
+          const customer = await prisma.customer.findFirst({
+            where: { id: Number(customer_id), company_id: companyId },
+          });
+          if (!customer) {
+            errors.push({ row: i + 1, error: "Customer not found" });
+            continue;
+          }
+        }
+        if (discount_type === "purchase" && supplier_id) {
+          const supplier = await prisma.supplier.findFirst({
+            where: { id: Number(supplier_id), company_id: companyId },
+          });
+          if (!supplier) {
+            errors.push({ row: i + 1, error: "Supplier not found" });
+            continue;
+          }
+        }
+        if (discount_unit === "percentage" && (isNaN(discount_value) || discount_value < 0 || discount_value > 100)) {
+          errors.push({ row: i + 1, error: "Percentage must be 0-100" });
+          continue;
+        }
+        if (discount_unit === "fixed" && (isNaN(discount_value) || discount_value < 0)) {
+          errors.push({ row: i + 1, error: "Fixed discount must be >= 0" });
+          continue;
+        }
+
+        await prisma.discount_master.create({
+          data: {
+            company_id: companyId,
+            discount_type,
+            publisher_id: Number(publisher_id),
+            customer_id: customer_id ? Number(customer_id) : null,
+            supplier_id: supplier_id ? Number(supplier_id) : null,
+            discount_value,
+            discount_unit,
+            status,
+            effective_from,
+            effective_to,
+            description,
+          },
+        });
+        created++;
+      } catch (err) {
+        errors.push({ row: i + 1, error: err.message || "Failed" });
+      }
+    }
+    return res.json({ created, total: req.body.length, errors: errors.length ? errors : undefined });
   }
 
   try {
