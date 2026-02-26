@@ -32,51 +32,115 @@ const createSingleProduct = async (req, res) => {
     }
   } else if (req.query.query === "createmany") {
     try {
+      const companyIdNum = parseInt(companyId, 10);
+      // Resolve names to IDs for each row (for CSV/Excel upload with names)
+      const resolvedBody = [];
+      for (const item of req.body) {
+        let book_publisher_id = item.book_publisher_id != null && item.book_publisher_id !== "" ? parseInt(item.book_publisher_id, 10) : null;
+        let product_currency_id = item.product_currency_id != null && item.product_currency_id !== "" ? parseInt(item.product_currency_id, 10) : null;
+        let product_category_id = item.product_category_id != null && item.product_category_id !== "" ? parseInt(item.product_category_id, 10) : null;
+        let product_category_ids = item.product_category_ids;
+        if (Array.isArray(product_category_ids)) {
+          product_category_ids = product_category_ids.map((id) => parseInt(id, 10)).filter((id) => !isNaN(id) && id > 0);
+        } else if (typeof product_category_ids === "string") {
+          try {
+            const parsed = JSON.parse(product_category_ids);
+            product_category_ids = Array.isArray(parsed) ? parsed.map((id) => parseInt(id, 10)).filter((id) => !isNaN(id) && id > 0) : [];
+          } catch {
+            product_category_ids = [];
+          }
+        } else {
+          product_category_ids = [];
+        }
+
+        if ((!book_publisher_id || isNaN(book_publisher_id)) && (item.book_publisher_name || item.book_publisher)) {
+          const name = String(item.book_publisher_name || item.book_publisher).trim();
+          if (name) {
+            const pub = await prisma.book_publisher.findFirst({
+              where: { name, company_id: companyIdNum },
+            });
+            if (pub) book_publisher_id = pub.id;
+          }
+        }
+        if ((!product_currency_id || isNaN(product_currency_id)) && (item.product_currency_name || item.product_currency)) {
+          const name = String(item.product_currency_name || item.product_currency).trim();
+          if (name) {
+            const curr = await prisma.product_currency.findFirst({
+              where: { name, company_id: companyIdNum },
+            });
+            if (curr) product_currency_id = curr.id;
+          }
+        }
+        if ((!product_category_id || isNaN(product_category_id)) && product_category_ids.length === 0) {
+          const nameStr = item.product_category_name || item.product_category || item.category_name || item.category;
+          if (nameStr) {
+            const names = String(nameStr).split(",").map((s) => s.trim()).filter(Boolean);
+            const ids = [];
+            for (const name of names) {
+              const cat = await prisma.product_category.findFirst({
+                where: { name, company_id: companyIdNum },
+              });
+              if (cat) ids.push(cat.id);
+            }
+            if (ids.length === 1) product_category_id = ids[0];
+            else if (ids.length > 1) product_category_ids = ids;
+          }
+        }
+
+        const finalCategoryIds = product_category_ids.length > 0
+          ? product_category_ids
+          : (product_category_id && !isNaN(product_category_id) ? [product_category_id] : []);
+        resolvedBody.push({
+          ...item,
+          book_publisher_id: book_publisher_id && !isNaN(book_publisher_id) ? book_publisher_id : null,
+          product_currency_id: product_currency_id && !isNaN(product_currency_id) ? product_currency_id : null,
+          product_category_id: product_category_id && !isNaN(product_category_id) ? product_category_id : null,
+          product_category_ids: finalCategoryIds,
+        });
+      }
+
       // sum all total purchase price
-      const totalPurchasePrice = req.body.reduce((acc, cur) => {
-        return acc + cur.quantity * cur.purchase_price;
+      const totalPurchasePrice = resolvedBody.reduce((acc, cur) => {
+        return acc + (parseFloat(cur.quantity) || 0) * (parseFloat(cur.purchase_price) || 0);
       }, 0);
       // convert incoming data to specific format (products are now master, no company_id)
-      const data = req.body.map((item) => {
+      const data = resolvedBody.map((item) => {
         const productData = {
-          name: item.name,
-          purchase_price: parseFloat(item.purchase_price),
-          sale_price: parseFloat(item.sale_price),
-          sku: item.sku,
-          unit_measurement: parseFloat(item.unit_measurement),
-          unit_type: item.unit_type,
-          isbn: item.isbn,
-          author: item.author,
-          product_currency_id: parseInt(item.product_currency_id),
-          book_publisher_id: parseInt(item.book_publisher_id),
+          name: item.name != null ? String(item.name).trim() : null,
+          purchase_price: parseFloat(item.purchase_price) || 0,
+          sale_price: parseFloat(item.sale_price) || 0,
+          sku: item.sku != null ? String(item.sku).trim() : null,
+          unit_measurement: parseFloat(item.unit_measurement) || null,
+          unit_type: item.unit_type != null ? String(item.unit_type).trim() : null,
+          isbn: item.isbn != null ? String(item.isbn).trim() : "",
+          author: item.author != null ? String(item.author).trim() : null,
+          product_currency_id: item.product_currency_id,
+          book_publisher_id: item.book_publisher_id,
         };
-        
-        // Handle single or multiple categories
-        if (item.product_category_id) {
-          productData.product_category_id = parseInt(item.product_category_id);
-        }
-        
+        if (item.product_category_id) productData.product_category_id = item.product_category_id;
+        else if (item.product_category_ids && item.product_category_ids.length > 0) productData.product_category_id = item.product_category_ids[0];
         return productData;
-      });
+      }).filter((p) => p.isbn && (p.book_publisher_id || p.product_currency_id)); // skip invalid rows
+
       // create many product from an array of object
       const createdProduct = await prisma.product.createMany({
         data: data,
         skipDuplicates: true,
       });
-      
+
       // After creating products, add categories if provided
-      for (const item of req.body) {
-        if (item.product_category_ids && Array.isArray(item.product_category_ids)) {
+      for (const item of resolvedBody) {
+        if (item.product_category_ids && Array.isArray(item.product_category_ids) && item.product_category_ids.length > 0) {
           const product = await prisma.product.findUnique({
-            where: { isbn: item.isbn }
+            where: { isbn: String(item.isbn).trim() }
           });
           if (product) {
             const categoryIds = item.product_category_ids
-              .map(id => Number(id))
-              .filter(id => !isNaN(id) && id > 0);
+              .map((id) => Number(id))
+              .filter((id) => !isNaN(id) && id > 0);
             if (categoryIds.length > 0) {
               await prisma.product_product_category.createMany({
-                data: categoryIds.map(categoryId => ({
+                data: categoryIds.map((categoryId) => ({
                   product_id: product.id,
                   product_category_id: categoryId
                 })),
@@ -86,7 +150,7 @@ const createSingleProduct = async (req, res) => {
           }
         } else if (item.product_category_id) {
           const product = await prisma.product.findUnique({
-            where: { isbn: item.isbn }
+            where: { isbn: String(item.isbn).trim() }
           });
           if (product) {
             const categoryId = Number(item.product_category_id);
@@ -101,19 +165,19 @@ const createSingleProduct = async (req, res) => {
           }
         }
       }
-      
+
       // Create product_stock entries for each created product
       const stockData = [];
-      for (const item of req.body) {
+      for (const item of resolvedBody) {
         const product = await prisma.product.findUnique({
-          where: { isbn: item.isbn }
+            where: { isbn: String(item.isbn).trim() }
         });
         if (product) {
           stockData.push({
             product_id: product.id,
             company_id: companyId,
-            quantity: parseInt(item.quantity) || 0,
-            reorder_quantity: parseInt(item.reorder_quantity) || null,
+            quantity: parseInt(item.quantity, 10) || 0,
+            reorder_quantity: item.reorder_quantity != null && item.reorder_quantity !== "" ? parseInt(item.reorder_quantity, 10) : null,
           });
         }
       }
@@ -127,8 +191,8 @@ const createSingleProduct = async (req, res) => {
       await prisma.transaction.create({
         data: {
           date: new Date(),
-          debit_id: 3,
-          credit_id: 6,
+          debit: { connect: { id: 3 } },
+          credit: { connect: { id: 6 } },
           amount: totalPurchasePrice,
           particulars: `Initial stock of ${createdProduct.count} item/s of product`,
           company: {
@@ -796,6 +860,8 @@ const updateSingleProduct = async (req, res) => {
 
     // Update product categories
     if (categoryIds.length > 0) {
+      // Set primary category (first selected) so product shows in category detail "Products under X"
+      updateData.product_category_id = categoryIds[0];
       // Delete existing categories and create new ones
       await prisma.product_product_category.deleteMany({
         where: { product_id: Number(req.params.id) }
@@ -806,7 +872,8 @@ const updateSingleProduct = async (req, res) => {
         }))
       };
     } else {
-      // If no categories provided, delete all existing categories
+      // If no categories provided, clear primary category and delete all junction records
+      updateData.product_category_id = null;
       await prisma.product_product_category.deleteMany({
         where: { product_id: Number(req.params.id) }
       });

@@ -346,18 +346,21 @@ const createSingleSaleInvoice = async (req, res) => {
       const purchasePrice = product?.purchase_price || 0;
       const profit = (salePrice * conversion - purchasePrice) * quantity * (1 - discount / 100);
       
-      // Update product_stock for this company
-      await prisma.product_stock.update({
+      // Update product_stock for this company (upsert: create if missing, e.g. product never purchased)
+      await prisma.product_stock.upsert({
         where: {
           product_id_company_id: {
             product_id: productId,
             company_id: companyId,
           },
         },
-        data: {
-          quantity: {
-            decrement: quantity,
-          },
+        update: {
+          quantity: { decrement: quantity },
+        },
+        create: {
+          product_id: productId,
+          company_id: companyId,
+          quantity: -quantity,
         },
       });
       

@@ -9,15 +9,50 @@ const createSingleDiscountMaster = async (req, res) => {
   }
 
   if (req.query.query === "createmany" && Array.isArray(req.body)) {
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+    const companyIdNum = parseInt(companyId, 10);
     let created = 0;
     const errors = [];
+
     for (let i = 0; i < req.body.length; i++) {
       const row = req.body[i];
       try {
         const discount_type = row.discount_type;
-        const publisher_id = row.publisher_id;
-        const customer_id = row.customer_id ?? null;
-        const supplier_id = row.supplier_id ?? null;
+        let publisher_id = row.publisher_id != null && row.publisher_id !== "" ? Number(row.publisher_id) : null;
+        let customer_id = row.customer_id != null && row.customer_id !== "" ? Number(row.customer_id) : null;
+        let supplier_id = row.supplier_id != null && row.supplier_id !== "" ? Number(row.supplier_id) : null;
+
+        // Resolve names to IDs when IDs are not provided (for CSV upload with names instead of IDs)
+        if (!publisher_id && (row.publisher_name || row.publisher)) {
+          const name = String(row.publisher_name || row.publisher).trim();
+          if (name) {
+            const pub = await prisma.book_publisher.findFirst({
+              where: { name, company_id: companyIdNum },
+            });
+            if (pub) publisher_id = pub.id;
+          }
+        }
+        if (!customer_id && (row.customer_name || row.customer)) {
+          const name = String(row.customer_name || row.customer).trim();
+          if (name) {
+            const cust = await prisma.customer.findFirst({
+              where: { name, company_id: companyIdNum },
+            });
+            if (cust) customer_id = cust.id;
+          }
+        }
+        if (!supplier_id && (row.supplier_name || row.supplier)) {
+          const name = String(row.supplier_name || row.supplier).trim();
+          if (name) {
+            const sup = await prisma.supplier.findFirst({
+              where: { name, company_id: companyIdNum },
+            });
+            if (sup) supplier_id = sup.id;
+          }
+        }
         const discount_value = parseFloat(row.discount_value);
         const discount_unit = row.discount_unit || "percentage";
         const status = row.status !== undefined ? Boolean(row.status) : true;

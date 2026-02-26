@@ -135,6 +135,11 @@ const getSingleProductCategory = async (req, res) => {
 			},
 			include: {
 				product: true,
+				products: {
+					include: {
+						product: true,
+					},
+				},
 			},
 		});
 
@@ -148,13 +153,23 @@ const getSingleProductCategory = async (req, res) => {
 			return res.status(403).json({ error: "Product category does not belong to your company" });
 		}
 
-		//adding image url to product_category
-		// for (let product of singleProductCategory.product) {
-		// 	if (product.imageName) {
-		// 		product.imageUrl = await getObjectSignedUrl(product.imageName);
-		// 	}
-		// }
-		res.json(singleProductCategory);
+		// Merge products from primary category (product) and many-to-many (products) and dedupe by id
+		const primaryProducts = singleProductCategory.product || [];
+		const junctionProducts = (singleProductCategory.products || []).map((pc) => pc.product);
+		const seenIds = new Set(primaryProducts.map((p) => p.id));
+		const merged = [...primaryProducts];
+		for (const p of junctionProducts) {
+			if (p && !seenIds.has(p.id)) {
+				seenIds.add(p.id);
+				merged.push(p);
+			}
+		}
+		const response = {
+			...singleProductCategory,
+			product: merged,
+		};
+		delete response.products;
+		res.json(response);
 	} catch (error) {
 		res.status(400).json(error.message);
 		console.log(error.message);
