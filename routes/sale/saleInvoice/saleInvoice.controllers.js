@@ -1242,6 +1242,17 @@ const updateSingleSaleInvoice = async (req, res) => {
         allProduct[index].purchase_price * item.product_quantity;
     });
 
+    // Calculate final totals with round off (keep consistent with create)
+    const subtotalAfterProductDiscounts = totalSalePrice - totalProductDiscount;
+    const additionalDiscount = parseFloat(req.body.discount) || 0;
+    const roundOffEnabled = !!req.body.round_off_enabled;
+    const roundOffAmount = roundOffEnabled
+      ? parseFloat(req.body.round_off_amount || 0)
+      : 0;
+    const finalTotal = subtotalAfterProductDiscounts - additionalDiscount + roundOffAmount;
+    const paidAmount = parseFloat(req.body.paid_amount) || 0;
+    const dueAmount = finalTotal - paidAmount;
+
     // Convert incoming date to a specific format
     const date = new Date(req.body.date).toISOString().split('T')[0];
 
@@ -1253,20 +1264,18 @@ const updateSingleSaleInvoice = async (req, res) => {
       data: {
         date: new Date(date),
         total_amount: totalSalePrice,
-        discount: parseFloat(req.body.discount),
-        paid_amount: parseFloat(req.body.paid_amount),
+        discount: additionalDiscount,
+        paid_amount: paidAmount,
         total_product_discount: totalProductDiscount,
         total_product_qty: totalProductQty,
+        round_off_enabled: roundOffEnabled,
+        round_off_amount: roundOffAmount,
         profit:
           totalSalePrice -
           totalProductDiscount -
-          parseFloat(req.body.discount) -
+          additionalDiscount -
           totalPurchasePrice,
-        due_amount:
-          totalSalePrice -
-          totalProductDiscount -
-          parseFloat(req.body.discount) -
-          parseFloat(req.body.paid_amount),
+        due_amount: dueAmount,
         customer: {
           connect: {
             id: Number(req.body.customer_id),
@@ -1304,13 +1313,13 @@ const updateSingleSaleInvoice = async (req, res) => {
     });
 
     // Create/update the necessary journal entries for the updated invoice
-    if (req.body.paid_amount > 0) {
+    if (paidAmount > 0) {
       await prisma.transaction.create({
         data: {
           date: new Date(date),
           debit: { connect: { id: 1 } },
           credit: { connect: { id: 8 } },
-          amount: parseFloat(req.body.paid_amount),
+          amount: paidAmount,
           particulars: `Cash receive on Sale Invoice #${updatedInvoice.id}`,
           type: 'sale',
           related_id: updatedInvoice.id,
@@ -1321,17 +1330,13 @@ const updateSingleSaleInvoice = async (req, res) => {
       });
     }
 
-    const due_amount =
-      totalSalePrice -
-      parseFloat(req.body.discount) -
-      parseFloat(req.body.paid_amount);
-    if (due_amount > 0) {
+    if (dueAmount > 0) {
       await prisma.transaction.create({
         data: {
           date: new Date(date),
           debit: { connect: { id: 4 } },
           credit: { connect: { id: 8 } },
-          amount: due_amount,
+          amount: dueAmount,
           particulars: `Due on Sale Invoice #${updatedInvoice.id}`,
           type: 'sale',
           related_id: updatedInvoice.id,
