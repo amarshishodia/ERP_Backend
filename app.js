@@ -40,6 +40,7 @@ const superAdminRoutes = require("./routes/superAdmin/superAdmin.routes");
 const ecommerceRoutes = require("./routes/ecommerce/ecommerce.routes");
 const ecommerceAdminRoutes = require("./routes/ecommerce/admin/admin.routes");
 const tempIsbnRoutes = require("./routes/utils/tempIsbn.routes");
+const chatbotRoutes = require("./routes/chatbot/chatbot.routes");
 
 /* variables */
 // express app instance
@@ -136,5 +137,6 @@ app.use("/v1/super-admin", superAdminRoutes);
 app.use("/v1/ecommerce", ecommerceRoutes);
 app.use("/v1/ecommerce/admin", ecommerceAdminRoutes);
 app.use("/v1/utils", tempIsbnRoutes);
+app.use("/v1/chatbot", chatbotRoutes);
 
 module.exports = app;
