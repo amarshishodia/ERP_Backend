@@ -114,21 +114,36 @@ const createSingleDiscountMaster = async (req, res) => {
           continue;
         }
 
-        await prisma.discount_master.create({
-          data: {
-            company_id: companyId,
-            discount_type,
-            publisher_id: Number(publisher_id),
-            customer_id: customer_id ? Number(customer_id) : null,
-            supplier_id: supplier_id ? Number(supplier_id) : null,
-            discount_value,
-            discount_unit,
-            status,
-            effective_from,
-            effective_to,
-            description,
-          },
-        });
+        const whereExisting = {
+          company_id: companyIdNum,
+          discount_type,
+          publisher_id: Number(publisher_id),
+          ...(discount_type === "sale"
+            ? { customer_id: customer_id ? Number(customer_id) : null }
+            : { supplier_id: supplier_id ? Number(supplier_id) : null }),
+        };
+        const existing = await prisma.discount_master.findFirst({ where: whereExisting });
+        const payload = {
+          discount_value,
+          discount_unit,
+          status,
+          effective_from,
+          effective_to,
+          description,
+        };
+        if (existing) {
+          await prisma.discount_master.update({
+            where: { id: existing.id },
+            data: payload,
+          });
+        } else {
+          await prisma.discount_master.create({
+            data: {
+              ...whereExisting,
+              ...payload,
+            },
+          });
+        }
         created++;
       } catch (err) {
         errors.push({ row: i + 1, error: err.message || "Failed" });
@@ -204,34 +219,51 @@ const createSingleDiscountMaster = async (req, res) => {
       return res.status(400).json({ error: "Fixed discount must be greater than or equal to 0" });
     }
 
-    const createdDiscount = await prisma.discount_master.create({
-      data: {
-        company_id: companyId,
-        discount_type,
-        publisher_id: Number(publisher_id),
-        customer_id: customer_id ? Number(customer_id) : null,
-        supplier_id: supplier_id ? Number(supplier_id) : null,
-        discount_value: parseFloat(discount_value),
-        discount_unit,
-        status: status !== undefined ? Boolean(status) : true,
-        effective_from: effective_from ? new Date(effective_from) : null,
-        effective_to: effective_to ? new Date(effective_to) : null,
-        description: description || null,
-      },
-      include: {
-        publisher: {
-          select: { id: true, name: true },
-        },
-        customer: {
-          select: { id: true, name: true },
-        },
-        supplier: {
-          select: { id: true, name: true },
-        },
-      },
-    });
+    const companyIdNum = Number(companyId);
+    const whereExisting = {
+      company_id: companyIdNum,
+      discount_type,
+      publisher_id: Number(publisher_id),
+      ...(discount_type === "sale"
+        ? { customer_id: customer_id ? Number(customer_id) : null }
+        : { supplier_id: supplier_id ? Number(supplier_id) : null }),
+    };
+    const existing = await prisma.discount_master.findFirst({ where: whereExisting });
+    const payload = {
+      discount_value: parseFloat(discount_value),
+      discount_unit,
+      status: status !== undefined ? Boolean(status) : true,
+      effective_from: effective_from ? new Date(effective_from) : null,
+      effective_to: effective_to ? new Date(effective_to) : null,
+      description: description || null,
+    };
 
-    res.json(createdDiscount);
+    let result;
+    if (existing) {
+      result = await prisma.discount_master.update({
+        where: { id: existing.id },
+        data: payload,
+        include: {
+          publisher: { select: { id: true, name: true } },
+          customer: { select: { id: true, name: true } },
+          supplier: { select: { id: true, name: true } },
+        },
+      });
+    } else {
+      result = await prisma.discount_master.create({
+        data: {
+          ...whereExisting,
+          ...payload,
+        },
+        include: {
+          publisher: { select: { id: true, name: true } },
+          customer: { select: { id: true, name: true } },
+          supplier: { select: { id: true, name: true } },
+        },
+      });
+    }
+
+    res.json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
     console.log(error.message);
@@ -501,6 +533,73 @@ const deleteSingleDiscountMaster = async (req, res) => {
   }
 };
 
+// Get applicable (active, date-valid) or latest discount for prefill: by publisher + customer (sale) or publisher + supplier (purchase)
+const getDiscountByPublisherAndParty = async (req, res) => {
+  try {
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+    const companyIdNum = Number(companyId);
+    const { discount_type, publisher_id, customer_id, supplier_id } = req.query;
+    if (!discount_type || !publisher_id) {
+      return res.status(400).json({ error: "discount_type and publisher_id are required" });
+    }
+    if (discount_type === "sale" && !customer_id) {
+      return res.status(400).json({ error: "customer_id is required for sale" });
+    }
+    if (discount_type === "purchase" && !supplier_id) {
+      return res.status(400).json({ error: "supplier_id is required for purchase" });
+    }
+    const publisherIdNum = Number(publisher_id);
+    const customerIdNum = customer_id ? Number(customer_id) : null;
+    const supplierIdNum = supplier_id ? Number(supplier_id) : null;
+    // Prefer applicable discount (active, within date range) so form shows the 10% that is in effect
+    const applicable = await getApplicableDiscount(
+      companyIdNum,
+      discount_type,
+      publisherIdNum,
+      discount_type === "sale" ? customerIdNum : null,
+      discount_type === "purchase" ? supplierIdNum : null
+    );
+    if (applicable) {
+      const withRelations = await prisma.discount_master.findUnique({
+        where: { id: applicable.id },
+        include: {
+          publisher: { select: { id: true, name: true } },
+          customer: { select: { id: true, name: true } },
+          supplier: { select: { id: true, name: true } },
+        },
+      });
+      return res.json(withRelations);
+    }
+    // Fallback: latest by created_at (any status) for prefill
+    const whereCondition = {
+      company_id: companyIdNum,
+      discount_type,
+      publisher_id: publisherIdNum,
+    };
+    if (discount_type === "sale") {
+      whereCondition.customer_id = customerIdNum;
+    } else {
+      whereCondition.supplier_id = supplierIdNum;
+    }
+    const discount = await prisma.discount_master.findFirst({
+      where: whereCondition,
+      orderBy: { created_at: "desc" },
+      include: {
+        publisher: { select: { id: true, name: true } },
+        customer: { select: { id: true, name: true } },
+        supplier: { select: { id: true, name: true } },
+      },
+    });
+    return res.json(discount || null);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+    console.log(error.message);
+  }
+};
+
 // Helper function to get applicable discount for a given context
 // For sales: discountType = "sale", publisherId and customerId required
 // For purchases: discountType = "purchase", publisherId and supplierId required
@@ -552,5 +651,6 @@ module.exports = {
   getSingleDiscountMaster,
   updateSingleDiscountMaster,
   deleteSingleDiscountMaster,
+  getDiscountByPublisherAndParty,
   getApplicableDiscount,
 };

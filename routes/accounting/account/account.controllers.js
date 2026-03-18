@@ -411,6 +411,82 @@ const getAllAccount = async (req, res) => {
       res.status(400).json({ error: error.message });
       console.log(error.message);
     }
+  } else if (req.query.query === "customer-summary") {
+    try {
+      const saleInvoices = await prisma.saleInvoice.findMany({
+        where: { company_id: companyId },
+        select: {
+          customer_id: true,
+          total_amount: true,
+          paid_amount: true,
+          due_amount: true,
+          customer: { select: { id: true, name: true, phone: true } },
+        },
+      });
+      const customerMap = new Map();
+      saleInvoices.forEach((inv) => {
+        const key = inv.customer_id;
+        if (!customerMap.has(key)) {
+          customerMap.set(key, {
+            id: inv.customer?.id,
+            name: inv.customer?.name ?? "N/A",
+            phone: inv.customer?.phone ?? "",
+            total_billed: 0,
+            total_received: 0,
+            total_due: 0,
+            invoice_count: 0,
+          });
+        }
+        const row = customerMap.get(key);
+        row.total_billed += Number(inv.total_amount ?? 0);
+        row.total_received += Number(inv.paid_amount ?? 0);
+        row.total_due += Number(inv.due_amount ?? 0);
+        row.invoice_count += 1;
+      });
+      const list = Array.from(customerMap.values()).sort((a, b) => (b.total_received || 0) - (a.total_received || 0));
+      res.json({ list });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+      console.log(error.message);
+    }
+  } else if (req.query.query === "supplier-summary") {
+    try {
+      const purchaseInvoices = await prisma.purchaseInvoice.findMany({
+        where: { company_id: companyId },
+        select: {
+          supplier_id: true,
+          total_amount: true,
+          paid_amount: true,
+          due_amount: true,
+          supplier: { select: { id: true, name: true, phone: true } },
+        },
+      });
+      const supplierMap = new Map();
+      purchaseInvoices.forEach((inv) => {
+        const key = inv.supplier_id;
+        if (!supplierMap.has(key)) {
+          supplierMap.set(key, {
+            id: inv.supplier?.id,
+            name: inv.supplier?.name ?? "N/A",
+            phone: inv.supplier?.phone ?? "",
+            total_billed: 0,
+            total_paid: 0,
+            total_due: 0,
+            invoice_count: 0,
+          });
+        }
+        const row = supplierMap.get(key);
+        row.total_billed += Number(inv.total_amount ?? 0);
+        row.total_paid += Number(inv.paid_amount ?? 0);
+        row.total_due += Number(inv.due_amount ?? 0);
+        row.invoice_count += 1;
+      });
+      const list = Array.from(supplierMap.values()).sort((a, b) => (b.total_paid || 0) - (a.total_paid || 0));
+      res.json({ list });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+      console.log(error.message);
+    }
   } else {
     try {
       const allAccount = await prisma.account.findMany({

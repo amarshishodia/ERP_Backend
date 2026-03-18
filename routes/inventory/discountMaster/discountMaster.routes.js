@@ -5,6 +5,7 @@ const {
   getSingleDiscountMaster,
   updateSingleDiscountMaster,
   deleteSingleDiscountMaster,
+  getDiscountByPublisherAndParty,
 } = require("./discountMaster.controllers");
 const authorize = require("../../../utils/authorize"); // authentication middleware
 
@@ -19,6 +20,11 @@ discountMasterRoutes.get(
   "/",
   authorize("viewDiscountMaster"),
   getAllDiscountMaster
+);
+discountMasterRoutes.get(
+  "/by-publisher-party",
+  authorize("viewDiscountMaster"),
+  getDiscountByPublisherAndParty
 );
 discountMasterRoutes.get(
   "/:id",
