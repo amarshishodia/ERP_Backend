@@ -31,28 +31,41 @@ const createSingleCustomer = async (req, res) => {
       const rows = Array.isArray(req.body) ? req.body : [];
 
       if (upsert && rows.length > 0) {
-        // Add or edit: upsert by phone (update if exists, create if not)
+        // Add or edit: upsert by phone when provided (update if exists, create if not)
         let created = 0;
         let updated = 0;
         for (const row of rows) {
           const name = String(row.name || "").trim();
-          const phone = String(row.phone || "").trim();
-          const address = String(row.address || "").trim();
-          if (!name || !phone || !address) continue;
-          const existing = await prisma.customer.findUnique({
-            where: {
-              phone_company_id: { phone, company_id: companyId },
-            },
-          });
-          if (existing) {
-            await prisma.customer.update({
-              where: { id: existing.id },
-              data: { name, address },
+          const phone = String(row.phone || "").trim() || null;
+          const address = String(row.address || "").trim() || null;
+          if (!name) continue;
+          if (phone) {
+            const existing = await prisma.customer.findUnique({
+              where: {
+                phone_company_id: { phone, company_id: companyId },
+              },
             });
-            updated += 1;
+            if (existing) {
+              const ob = row.opening_balance != null && row.opening_balance !== "" ? parseFloat(row.opening_balance) : 0;
+              const obDate = row.opening_balance_date ? new Date(row.opening_balance_date) : new Date();
+              await prisma.customer.update({
+                where: { id: existing.id },
+                data: { name, address, opening_balance: ob, opening_balance_date: obDate },
+              });
+              updated += 1;
+            } else {
+              const ob = row.opening_balance != null && row.opening_balance !== "" ? parseFloat(row.opening_balance) : 0;
+              const obDate = row.opening_balance_date ? new Date(row.opening_balance_date) : new Date();
+              await prisma.customer.create({
+                data: { name, phone, address, company_id: companyId, opening_balance: ob, opening_balance_date: obDate },
+              });
+              created += 1;
+            }
           } else {
+            const ob = row.opening_balance != null && row.opening_balance !== "" ? parseFloat(row.opening_balance) : 0;
+            const obDate = row.opening_balance_date ? new Date(row.opening_balance_date) : new Date();
             await prisma.customer.create({
-              data: { name, phone, address, company_id: companyId },
+              data: { name, phone: null, address, company_id: companyId, opening_balance: ob, opening_balance_date: obDate },
             });
             created += 1;
           }
@@ -63,10 +76,12 @@ const createSingleCustomer = async (req, res) => {
         const createdCustomer = await prisma.customer.createMany({
           data: rows.map((c) => ({
             name: String(c.name || "").trim(),
-            phone: String(c.phone || "").trim(),
-            address: String(c.address || "").trim(),
+            phone: String(c.phone || "").trim() || null,
+            address: String(c.address || "").trim() || null,
             company_id: companyId,
-          })).filter((c) => c.name && c.phone && c.address),
+            opening_balance: c.opening_balance != null && c.opening_balance !== "" ? parseFloat(c.opening_balance) : 0,
+            opening_balance_date: c.opening_balance_date ? new Date(c.opening_balance_date) : new Date(),
+          })).filter((c) => c.name),
           skipDuplicates: true,
         });
         res.json(createdCustomer);
@@ -78,12 +93,18 @@ const createSingleCustomer = async (req, res) => {
   } else {
     try {
       // create single customer from an object
+      const openingBalance = req.body.opening_balance != null && req.body.opening_balance !== "" ? parseFloat(req.body.opening_balance) : 0;
+      const openingBalanceDate = req.body.opening_balance_date ? new Date(req.body.opening_balance_date) : new Date();
+      const phone = req.body.phone != null && String(req.body.phone).trim() !== "" ? String(req.body.phone).trim() : null;
+      const address = req.body.address != null && String(req.body.address).trim() !== "" ? String(req.body.address).trim() : null;
       const createdCustomer = await prisma.customer.create({
         data: {
           name: req.body.name,
-          phone: req.body.phone,
-          address: req.body.address,
+          phone,
+          address,
           company_id: companyId,
+          opening_balance: openingBalance,
+          opening_balance_date: openingBalanceDate,
         },
       });
       res.json(createdCustomer);
@@ -477,15 +498,22 @@ const updateSingleCustomer = async (req, res) => {
       return res.status(404).json({ error: "Customer not found" });
     }
 
+    const updateData = {
+      name: req.body.name,
+      phone: req.body.phone != null && String(req.body.phone).trim() !== "" ? String(req.body.phone).trim() : null,
+      address: req.body.address != null && String(req.body.address).trim() !== "" ? String(req.body.address).trim() : null,
+    };
+    if (req.body.opening_balance != null) {
+      updateData.opening_balance = parseFloat(req.body.opening_balance) || 0;
+    }
+    if (req.body.opening_balance_date != null) {
+      updateData.opening_balance_date = new Date(req.body.opening_balance_date);
+    }
     const updatedCustomer = await prisma.customer.update({
       where: {
         id: parseInt(req.params.id),
       },
-      data: {
-        name: req.body.name,
-        phone: req.body.phone,
-        address: req.body.address,
-      },
+      data: updateData,
     });
     res.json(updatedCustomer);
   } catch (error) {

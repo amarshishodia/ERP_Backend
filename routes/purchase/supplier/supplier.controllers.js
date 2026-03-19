@@ -46,20 +46,26 @@ const createSingleSupplier = async (req, res) => {
               },
             });
             if (existing) {
+              const ob = row.opening_balance != null && row.opening_balance !== "" ? parseFloat(row.opening_balance) : 0;
+              const obDate = row.opening_balance_date ? new Date(row.opening_balance_date) : new Date();
               await prisma.supplier.update({
                 where: { id: existing.id },
-                data: { name, address },
+                data: { name, address, opening_balance: ob, opening_balance_date: obDate },
               });
               updated += 1;
             } else {
+              const ob = row.opening_balance != null && row.opening_balance !== "" ? parseFloat(row.opening_balance) : 0;
+              const obDate = row.opening_balance_date ? new Date(row.opening_balance_date) : new Date();
               await prisma.supplier.create({
-                data: { name, phone, address, company_id: companyId },
+                data: { name, phone, address, company_id: companyId, opening_balance: ob, opening_balance_date: obDate },
               });
               created += 1;
             }
           } else {
+            const ob = row.opening_balance != null && row.opening_balance !== "" ? parseFloat(row.opening_balance) : 0;
+            const obDate = row.opening_balance_date ? new Date(row.opening_balance_date) : new Date();
             await prisma.supplier.create({
-              data: { name, phone: null, address, company_id: companyId },
+              data: { name, phone: null, address, company_id: companyId, opening_balance: ob, opening_balance_date: obDate },
             });
             created += 1;
           }
@@ -74,6 +80,8 @@ const createSingleSupplier = async (req, res) => {
               phone: String(supplier.phone || "").trim() || null,
               address: String(supplier.address || "").trim() || null,
               company_id: companyId,
+              opening_balance: supplier.opening_balance != null && supplier.opening_balance !== "" ? parseFloat(supplier.opening_balance) : 0,
+              opening_balance_date: supplier.opening_balance_date ? new Date(supplier.opening_balance_date) : new Date(),
             }))
             .filter((s) => s.name),
           skipDuplicates: true,
@@ -87,12 +95,16 @@ const createSingleSupplier = async (req, res) => {
   } else {
     try {
       // create a single supplier (phone and address optional)
+      const openingBalance = req.body.opening_balance != null && req.body.opening_balance !== "" ? parseFloat(req.body.opening_balance) : 0;
+      const openingBalanceDate = req.body.opening_balance_date ? new Date(req.body.opening_balance_date) : new Date();
       const createdSupplier = await prisma.supplier.create({
         data: {
           name: req.body.name,
           phone: req.body.phone != null && String(req.body.phone).trim() !== "" ? String(req.body.phone).trim() : null,
           address: req.body.address != null && String(req.body.address).trim() !== "" ? String(req.body.address).trim() : null,
           company_id: companyId,
+          opening_balance: openingBalance,
+          opening_balance_date: openingBalanceDate,
         },
       });
 
@@ -483,15 +495,22 @@ const updateSingleSupplier = async (req, res) => {
       return res.status(403).json({ error: "Supplier does not belong to your company" });
     }
 
+    const updateData = {
+      name: req.body.name,
+      phone: req.body.phone != null && String(req.body.phone).trim() !== "" ? String(req.body.phone).trim() : null,
+      address: req.body.address != null && String(req.body.address).trim() !== "" ? String(req.body.address).trim() : null,
+    };
+    if (req.body.opening_balance != null) {
+      updateData.opening_balance = parseFloat(req.body.opening_balance) || 0;
+    }
+    if (req.body.opening_balance_date != null) {
+      updateData.opening_balance_date = new Date(req.body.opening_balance_date);
+    }
     const updatedSupplier = await prisma.supplier.update({
       where: {
         id: parseInt(req.params.id),
       },
-      data: {
-        name: req.body.name,
-        phone: req.body.phone != null && String(req.body.phone).trim() !== "" ? String(req.body.phone).trim() : null,
-        address: req.body.address != null && String(req.body.address).trim() !== "" ? String(req.body.address).trim() : null,
-      },
+      data: updateData,
     });
     res.json(updatedSupplier);
   } catch (error) {

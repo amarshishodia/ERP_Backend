@@ -182,14 +182,16 @@ model product_currency_rate {
 }
 
 model supplier {
-  id              Int               @id @default(autoincrement())
-  name            String
-  phone           String?
-  address         String?
-  company_id      Int
-  status          Boolean           @default(true)
-  created_at      DateTime          @default(now())
-  updated_at      DateTime          @updatedAt
+  id                   Int               @id @default(autoincrement())
+  name                 String
+  phone                String?
+  address              String?
+  company_id           Int
+  status               Boolean           @default(true)
+  opening_balance      Float             @default(0)
+  opening_balance_date DateTime         @default(now())
+  created_at           DateTime          @default(now())
+  updated_at           DateTime          @updatedAt
   purchaseInvoice purchaseInvoice[]
   purchase_orders purchase_order[]
   company         appSetting        @relation(fields: [company_id], references: [id])
@@ -251,14 +253,16 @@ model purchaseInvoiceProduct {
 }
 
 model customer {
-  id                 Int                   @id @default(autoincrement())
-  name               String
-  phone              String
-  address            String
-  status             Boolean               @default(true)
-  company_id         Int
-  created_at         DateTime              @default(now())
-  updated_at         DateTime              @updatedAt
+  id                   Int                   @id @default(autoincrement())
+  name                 String
+  phone                String?
+  address              String?
+  status               Boolean               @default(true)
+  company_id           Int
+  opening_balance      Float                 @default(0)
+  opening_balance_date DateTime              @default(now())
+  created_at           DateTime              @default(now())
+  updated_at           DateTime              @updatedAt
   company            appSetting            @relation(fields: [company_id], references: [id])
   saleInvoice        saleInvoice[]
   quotationInvoice   quotationInvoice[]
@@ -656,16 +660,20 @@ model product_stock {
   id                Int       @id @default(autoincrement())
   product_id        Int
   company_id        Int
+  location_id       Int?
   quantity          Int       @default(0)
+  list_price        Float?
   reorder_quantity  Int?
   created_at        DateTime  @default(now())
   updated_at        DateTime  @updatedAt
   product           product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
   company           appSetting @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  location          location? @relation(fields: [location_id], references: [id], onDelete: SetNull)
 
   @@unique([product_id, company_id])
   @@index([product_id])
   @@index([company_id])
+  @@index([location_id])
 }
 
 model location {
@@ -676,6 +684,7 @@ model location {
   updatedAt  DateTime @updatedAt
   company    appSetting @relation(fields: [company_id], references: [id], onDelete: Cascade)
   stock_entries stock[]
+  product_stock product_stock[]
 
   @@unique([name, company_id])
   @@index([company_id])

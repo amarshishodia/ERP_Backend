@@ -122,70 +122,129 @@ const createSingleProduct = async (req, res) => {
         return productData;
       }).filter((p) => p.isbn && (p.book_publisher_id || p.product_currency_id)); // skip invalid rows
 
-      // create many product from an array of object
+      // Create products (skip duplicates by ISBN) - only new products get created
       const createdProduct = await prisma.product.createMany({
         data: data,
         skipDuplicates: true,
       });
 
+      // Helper to get or create location for this company
+      const getLocationForRow = async (item) => {
+        const locationName = item.location_name ? String(item.location_name).trim() : null;
+        if (locationName) {
+          const loc = await prisma.location.findFirst({
+            where: { name: locationName, company_id: companyIdNum },
+          });
+          if (loc) return loc;
+          return prisma.location.create({
+            data: { name: locationName, company_id: companyIdNum },
+          });
+        }
+        let defaultLocation = await prisma.location.findFirst({
+          where: { company_id: companyIdNum },
+        });
+        if (!defaultLocation) {
+          defaultLocation = await prisma.location.create({
+            data: { name: "Default", company_id: companyIdNum },
+          });
+        }
+        return defaultLocation;
+      };
+
       // After creating products, add categories if provided
       for (const item of resolvedBody) {
+        const product = await prisma.product.findUnique({
+          where: { isbn: String(item.isbn).trim() },
+        });
+        if (!product) continue;
         if (item.product_category_ids && Array.isArray(item.product_category_ids) && item.product_category_ids.length > 0) {
-          const product = await prisma.product.findUnique({
-            where: { isbn: String(item.isbn).trim() }
-          });
-          if (product) {
-            const categoryIds = item.product_category_ids
-              .map((id) => Number(id))
-              .filter((id) => !isNaN(id) && id > 0);
-            if (categoryIds.length > 0) {
-              await prisma.product_product_category.createMany({
-                data: categoryIds.map((categoryId) => ({
-                  product_id: product.id,
-                  product_category_id: categoryId
-                })),
-                skipDuplicates: true
-              });
-            }
+          const categoryIds = item.product_category_ids
+            .map((id) => Number(id))
+            .filter((id) => !isNaN(id) && id > 0);
+          if (categoryIds.length > 0) {
+            await prisma.product_product_category.createMany({
+              data: categoryIds.map((categoryId) => ({
+                product_id: product.id,
+                product_category_id: categoryId,
+              })),
+              skipDuplicates: true,
+            });
           }
         } else if (item.product_category_id) {
-          const product = await prisma.product.findUnique({
-            where: { isbn: String(item.isbn).trim() }
-          });
-          if (product) {
-            const categoryId = Number(item.product_category_id);
-            if (!isNaN(categoryId) && categoryId > 0) {
-              await prisma.product_product_category.create({
-                data: {
-                  product_id: product.id,
-                  product_category_id: categoryId
-                }
-              }).catch(() => {}); // Ignore if already exists
-            }
+          const categoryId = Number(item.product_category_id);
+          if (!isNaN(categoryId) && categoryId > 0) {
+            await prisma.product_product_category.create({
+              data: {
+                product_id: product.id,
+                product_category_id: categoryId,
+              },
+            }).catch(() => {});
           }
         }
       }
 
-      // Create product_stock entries for each created product
-      const stockData = [];
+      // For each product (new or existing): add stock to stock table and upsert product_stock
       for (const item of resolvedBody) {
         const product = await prisma.product.findUnique({
-            where: { isbn: String(item.isbn).trim() }
+          where: { isbn: String(item.isbn).trim() },
         });
-        if (product) {
-          stockData.push({
-            product_id: product.id,
-            company_id: companyId,
-            quantity: parseInt(item.quantity, 10) || 0,
-            reorder_quantity: item.reorder_quantity != null && item.reorder_quantity !== "" ? parseInt(item.reorder_quantity, 10) : null,
+        if (!product) continue;
+        const location = await getLocationForRow(item);
+        const qty = parseInt(item.quantity, 10) || 0;
+        const purchasePrice = parseFloat(item.purchase_price) || 0;
+        const listPrice = parseFloat(item.sale_price) || parseFloat(item.list_price) || 0;
+        const reorderQty = item.reorder_quantity != null && item.reorder_quantity !== "" ? parseInt(item.reorder_quantity, 10) : null;
+
+        if (qty > 0) {
+          // Create stock table entry (per-location warehouse tracking)
+          await prisma.stock.create({
+            data: {
+              product_id: product.id,
+              company_id: companyIdNum,
+              location_id: location.id,
+              transaction_date: new Date(),
+              purchase_price: purchasePrice,
+              quantity: qty,
+            },
           });
         }
-      }
-      if (stockData.length > 0) {
-        await prisma.product_stock.createMany({
-          data: stockData,
-          skipDuplicates: true,
+
+        // Upsert product_stock: add quantity for existing, create for new
+        const existingStock = await prisma.product_stock.findUnique({
+          where: {
+            product_id_company_id: {
+              product_id: product.id,
+              company_id: companyIdNum,
+            },
+          },
         });
+        if (existingStock) {
+          await prisma.product_stock.update({
+            where: {
+              product_id_company_id: {
+                product_id: product.id,
+                company_id: companyIdNum,
+              },
+            },
+            data: {
+              quantity: existingStock.quantity + qty,
+              list_price: listPrice > 0 ? listPrice : existingStock.list_price,
+              reorder_quantity: reorderQty ?? existingStock.reorder_quantity,
+              location_id: location.id,
+            },
+          });
+        } else {
+          await prisma.product_stock.create({
+            data: {
+              product_id: product.id,
+              company_id: companyIdNum,
+              quantity: qty,
+              list_price: listPrice > 0 ? listPrice : null,
+              reorder_quantity: reorderQty,
+              location_id: location.id,
+            },
+          });
+        }
       }
       // stock product's account transaction create with company_id
       await prisma.transaction.create({
@@ -300,30 +359,7 @@ const createSingleProduct = async (req, res) => {
       file?.filename?
       createdProduct.imageUrl = `${HOST}:${PORT}/v1/product-image/${file.filename}`:'';
 
-      // Create product_stock entry for this company
-      const purchasePrice = req.body.purchase_price && !isNaN(parseFloat(req.body.purchase_price)) ? parseFloat(req.body.purchase_price) : 0;
-      const reorderQty = req.body.reorder_quantity && !isNaN(parseInt(req.body.reorder_quantity)) ? parseInt(req.body.reorder_quantity) : null;
-      
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
-            product_id: createdProduct.id,
-            company_id: companyId,
-          },
-        },
-        update: {
-          quantity: quantity,
-          reorder_quantity: reorderQty,
-        },
-        create: {
-          product_id: createdProduct.id,
-          company_id: companyId,
-          quantity: quantity,
-          reorder_quantity: reorderQty,
-        },
-      });
-
-      // Create stock entries (multiple per product) if provided
+      // Parse stock entries first (used for product_stock and transaction)
       let stockEntries = [];
       if (req.body.stock_entries) {
         try {
@@ -335,36 +371,71 @@ const createSingleProduct = async (req, res) => {
           console.log('Failed to parse stock_entries:', e.message);
         }
       }
-      if (stockEntries.length > 0) {
-        const stockData = stockEntries
-          .filter(
-            (e) =>
-              e.locationId != null &&
-              e.quantity != null &&
-              !isNaN(Number(e.quantity)) &&
-              Number(e.quantity) >= 0
-          )
-          .map((e) => ({
+      const validStockEntries = stockEntries.filter(
+        (e) =>
+          e.locationId != null &&
+          e.quantity != null &&
+          !isNaN(Number(e.quantity)) &&
+          Number(e.quantity) >= 0
+      );
+      const totalStockQty = validStockEntries.reduce((sum, e) => sum + (parseInt(e.quantity, 10) || 0), 0);
+      const totalStockValue = validStockEntries.reduce(
+        (sum, e) => sum + (parseInt(e.quantity, 10) || 0) * (parseFloat(e.purchasePrice) || 0),
+        0
+      );
+      const firstLocationId = validStockEntries.length > 0 ? Number(validStockEntries[0].locationId) : null;
+      const salePrice = parseFloat(req.body.sale_price) || 0;
+
+      // Create product_stock entry for this company (quantity from stock entries or form)
+      const purchasePrice = req.body.purchase_price && !isNaN(parseFloat(req.body.purchase_price)) ? parseFloat(req.body.purchase_price) : 0;
+      const reorderQty = req.body.reorder_quantity && !isNaN(parseInt(req.body.reorder_quantity)) ? parseInt(req.body.reorder_quantity) : null;
+      const productStockQty = validStockEntries.length > 0 ? totalStockQty : quantity;
+
+      await prisma.product_stock.upsert({
+        where: {
+          product_id_company_id: {
             product_id: createdProduct.id,
             company_id: companyId,
-            location_id: Number(e.locationId),
-            transaction_date: e.transactionDate ? new Date(e.transactionDate) : new Date(),
-            purchase_price: parseFloat(e.purchasePrice) || 0,
-            quantity: parseInt(e.quantity, 10) || 0,
-            status: e.status !== false,
-          }));
-        if (stockData.length > 0) {
-          await prisma.stock.createMany({ data: stockData });
-        }
+          },
+        },
+        update: {
+          quantity: productStockQty,
+          reorder_quantity: reorderQty,
+          list_price: salePrice > 0 ? salePrice : undefined,
+          location_id: firstLocationId,
+        },
+        create: {
+          product_id: createdProduct.id,
+          company_id: companyId,
+          quantity: productStockQty,
+          reorder_quantity: reorderQty,
+          list_price: salePrice > 0 ? salePrice : null,
+          location_id: firstLocationId,
+        },
+      });
+
+      // Create stock entries (multiple per product) if provided
+      if (validStockEntries.length > 0) {
+        const stockData = validStockEntries.map((e) => ({
+          product_id: createdProduct.id,
+          company_id: companyId,
+          location_id: Number(e.locationId),
+          transaction_date: e.transactionDate ? new Date(e.transactionDate) : new Date(),
+          purchase_price: parseFloat(e.purchasePrice) || 0,
+          quantity: parseInt(e.quantity, 10) || 0,
+          status: e.status !== false,
+        }));
+        await prisma.stock.createMany({ data: stockData });
       }
 
-      // stock product's account transaction create (only if quantity > 0 and purchase_price > 0)
-      if (quantity > 0 && purchasePrice > 0) {
+      // stock product's account transaction create (only if quantity > 0 and value > 0)
+      const transactionAmount = validStockEntries.length > 0 ? totalStockValue : purchasePrice * quantity;
+      if (transactionAmount > 0) {
         await createTransactionWithSubAccounts({
           date: new Date(),
           sub_debit_id: 3, // Inventory
           sub_credit_id: 6, // Capital
-          amount: purchasePrice * quantity,
+          amount: transactionAmount,
           particulars: `Initial stock of product #${createdProduct.id}`,
           company_id: companyId,
         });
@@ -422,7 +493,7 @@ const getAllProduct = async (req, res) => {
           book_publisher: { select: { name: true } },
           product_stock: {
             where: { company_id: companyId },
-            select: { quantity: true, reorder_quantity: true },
+            select: { quantity: true, reorder_quantity: true, list_price: true, location_id: true, location: { select: { id: true, name: true } } },
           },
         },
       });
@@ -490,7 +561,7 @@ const getAllProduct = async (req, res) => {
           book_publisher: { select: { name: true } },
           product_stock: {
             where: { company_id: companyId },
-            select: { quantity: true, reorder_quantity: true },
+            select: { quantity: true, reorder_quantity: true, list_price: true, location_id: true, location: { select: { id: true, name: true } } },
           },
         },
         skip: skip,
@@ -619,7 +690,7 @@ const getAllProduct = async (req, res) => {
           book_publisher: { select: { name: true } },
           product_stock: {
             where: { company_id: companyId },
-            select: { quantity: true, reorder_quantity: true },
+            select: { quantity: true, reorder_quantity: true, list_price: true, location_id: true, location: { select: { id: true, name: true } } },
           },
         },
       });
@@ -653,7 +724,7 @@ const getAllProduct = async (req, res) => {
           },
           product_stock: {
             where: { company_id: companyId },
-            select: { quantity: true, reorder_quantity: true },
+            select: { quantity: true, reorder_quantity: true, list_price: true, location_id: true, location: { select: { id: true, name: true } } },
           },
         },
       });
@@ -742,6 +813,9 @@ const getSingleProduct = async (req, res) => {
           select: {
             quantity: true,
             reorder_quantity: true,
+            list_price: true,
+            location_id: true,
+            location: { select: { id: true, name: true } },
           },
         },
         stock_entries: {
@@ -904,29 +978,10 @@ const updateSingleProduct = async (req, res) => {
       },
     });
     
-    // Update product_stock for this company
-    await prisma.product_stock.upsert({
-      where: {
-        product_id_company_id: {
-          product_id: updatedProduct.id,
-          company_id: companyId,
-        },
-      },
-      update: {
-        quantity: quantity,
-        reorder_quantity: reorderQuantity,
-      },
-      create: {
-        product_id: updatedProduct.id,
-        company_id: companyId,
-        quantity: quantity,
-        reorder_quantity: reorderQuantity,
-      },
-    });
-
-    // Replace stock entries (multiple per product) if provided
+    // Replace stock entries only when explicitly provided (stock_entries in request)
     let stockEntries = [];
-    if (req.body.stock_entries) {
+    const hasStockEntriesInRequest = req.body.stock_entries !== undefined && req.body.stock_entries !== null;
+    if (hasStockEntriesInRequest) {
       try {
         const parsed = typeof req.body.stock_entries === 'string'
           ? JSON.parse(req.body.stock_entries)
@@ -936,33 +991,82 @@ const updateSingleProduct = async (req, res) => {
         console.log('Failed to parse stock_entries:', e.message);
       }
     }
-    if (stockEntries.length >= 0) {
-      const productId = Number(req.params.id);
+
+    const productId = Number(req.params.id);
+    const salePrice = parseFloat(req.body.sale_price) || 0;
+
+    if (hasStockEntriesInRequest) {
+      const validStockEntries = stockEntries.filter(
+        (e) =>
+          e.locationId != null &&
+          e.quantity != null &&
+          !isNaN(Number(e.quantity)) &&
+          Number(e.quantity) >= 0
+      );
+      const totalStockQty = validStockEntries.reduce((sum, e) => sum + (parseInt(e.quantity, 10) || 0), 0);
+      const firstLocationId = validStockEntries.length > 0 ? Number(validStockEntries[0].locationId) : null;
+
       await prisma.stock.deleteMany({
         where: { product_id: productId, company_id: companyId },
       });
-      if (stockEntries.length > 0) {
-        const stockData = stockEntries
-          .filter(
-            (e) =>
-              e.locationId != null &&
-              e.quantity != null &&
-              !isNaN(Number(e.quantity)) &&
-              Number(e.quantity) >= 0
-          )
-          .map((e) => ({
-            product_id: productId,
-            company_id: companyId,
-            location_id: Number(e.locationId),
-            transaction_date: e.transactionDate ? new Date(e.transactionDate) : new Date(),
-            purchase_price: parseFloat(e.purchasePrice) || 0,
-            quantity: parseInt(e.quantity, 10) || 0,
-            status: e.status !== false,
-          }));
-        if (stockData.length > 0) {
-          await prisma.stock.createMany({ data: stockData });
-        }
+      if (validStockEntries.length > 0) {
+        const stockData = validStockEntries.map((e) => ({
+          product_id: productId,
+          company_id: companyId,
+          location_id: Number(e.locationId),
+          transaction_date: e.transactionDate ? new Date(e.transactionDate) : new Date(),
+          purchase_price: parseFloat(e.purchasePrice) || 0,
+          quantity: parseInt(e.quantity, 10) || 0,
+          status: e.status !== false,
+        }));
+        await prisma.stock.createMany({ data: stockData });
       }
+
+      // Update product_stock from stock entries
+      await prisma.product_stock.upsert({
+        where: {
+          product_id_company_id: {
+            product_id: updatedProduct.id,
+            company_id: companyId,
+          },
+        },
+        update: {
+          quantity: totalStockQty,
+          reorder_quantity: reorderQuantity,
+          list_price: salePrice > 0 ? salePrice : undefined,
+          location_id: firstLocationId,
+        },
+        create: {
+          product_id: updatedProduct.id,
+          company_id: companyId,
+          quantity: totalStockQty,
+          reorder_quantity: reorderQuantity,
+          list_price: salePrice > 0 ? salePrice : null,
+          location_id: firstLocationId,
+        },
+      });
+    } else {
+      // Stock entries not in request - only update product_stock quantity/reorder from form (e.g. quick edit)
+      await prisma.product_stock.upsert({
+        where: {
+          product_id_company_id: {
+            product_id: updatedProduct.id,
+            company_id: companyId,
+          },
+        },
+        update: {
+          quantity: quantity,
+          reorder_quantity: reorderQuantity,
+          list_price: salePrice > 0 ? salePrice : undefined,
+        },
+        create: {
+          product_id: updatedProduct.id,
+          company_id: companyId,
+          quantity: quantity,
+          reorder_quantity: reorderQuantity,
+          list_price: salePrice > 0 ? salePrice : null,
+        },
+      });
     }
 
     // Add image URL if image exists
