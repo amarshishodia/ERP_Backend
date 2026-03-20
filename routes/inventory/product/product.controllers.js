@@ -493,7 +493,7 @@ const getAllProduct = async (req, res) => {
           book_publisher: { select: { name: true } },
           product_stock: {
             where: { company_id: companyId },
-            select: { quantity: true, reorder_quantity: true, list_price: true, location_id: true, location: { select: { id: true, name: true } } },
+            select: { quantity: true, reorder_quantity: true, list_price: true },
           },
         },
       });
@@ -561,7 +561,7 @@ const getAllProduct = async (req, res) => {
           book_publisher: { select: { name: true } },
           product_stock: {
             where: { company_id: companyId },
-            select: { quantity: true, reorder_quantity: true, list_price: true, location_id: true, location: { select: { id: true, name: true } } },
+            select: { quantity: true, reorder_quantity: true, list_price: true },
           },
         },
         skip: skip,
@@ -690,7 +690,7 @@ const getAllProduct = async (req, res) => {
           book_publisher: { select: { name: true } },
           product_stock: {
             where: { company_id: companyId },
-            select: { quantity: true, reorder_quantity: true, list_price: true, location_id: true, location: { select: { id: true, name: true } } },
+            select: { quantity: true, reorder_quantity: true, list_price: true },
           },
         },
       });
@@ -724,7 +724,7 @@ const getAllProduct = async (req, res) => {
           },
           product_stock: {
             where: { company_id: companyId },
-            select: { quantity: true, reorder_quantity: true, list_price: true, location_id: true, location: { select: { id: true, name: true } } },
+            select: { quantity: true, reorder_quantity: true, list_price: true },
           },
         },
       });
@@ -814,8 +814,6 @@ const getSingleProduct = async (req, res) => {
             quantity: true,
             reorder_quantity: true,
             list_price: true,
-            location_id: true,
-            location: { select: { id: true, name: true } },
           },
         },
         stock_entries: {
