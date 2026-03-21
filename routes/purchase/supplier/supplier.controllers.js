@@ -1,6 +1,10 @@
 const { getPagination } = require("../../../utils/query");
 const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
+const {
+  sumPurchaseDueBySupplierId,
+  attachSupplierBalance,
+} = require("../../../utils/partyBalance");
 
 const createSingleSupplier = async (req, res) => {
   // Get company_id from logged-in user
@@ -157,11 +161,9 @@ const getAllSupplier = async (req, res) => {
         },
         skip: parseInt(skip),
         take: parseInt(limit),
-        include: {
-          purchaseInvoice: true,
-        },
       });
-      res.json(allSupplier);
+      const dueMap = await sumPurchaseDueBySupplierId(prisma, companyId);
+      res.json(attachSupplierBalance(allSupplier, dueMap));
     } catch (error) {
       res.status(400).json(error.message);
       console.log(error.message);
@@ -197,11 +199,9 @@ const getAllSupplier = async (req, res) => {
         },
         skip: parseInt(skip),
         take: parseInt(limit),
-        include: {
-          purchaseInvoice: true,
-        },
       });
-      res.json(allSupplier);
+      const dueMap = await sumPurchaseDueBySupplierId(prisma, companyId);
+      res.json(attachSupplierBalance(allSupplier, dueMap));
     } catch (error) {
       res.status(400).json(error.message);
       console.log(error.message);

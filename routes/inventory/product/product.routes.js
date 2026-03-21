@@ -8,6 +8,8 @@ const {
   updateSingleProduct,
   deleteSingleProduct,
   getProductHistory,
+  patchProductListPriceSync,
+  patchProductPurchasePriceSync,
 } = require("./product.controllers");
 const authorize = require("../../../utils/authorize"); // authentication middleware
 
@@ -34,6 +36,17 @@ const upload = multer({ storage: storage });
 productRoutes.post("/", authorize("createProduct"), upload.single("image"), createSingleProduct);
 productRoutes.get("/", authorize("viewProduct"), getAllProduct);
 productRoutes.get("/history", authorize("viewProduct"), getProductHistory);
+// Must be before GET /:id so "sync-list-price" is not captured as id
+productRoutes.patch(
+  "/:id/sync-list-price",
+  authorize("updateProduct"),
+  patchProductListPriceSync
+);
+productRoutes.patch(
+  "/:id/sync-purchase-price",
+  authorize("updateProduct"),
+  patchProductPurchasePriceSync
+);
 productRoutes.get("/:id", authorize("viewProduct"), getSingleProduct);
 productRoutes.put("/:id", authorize("updateProduct"), upload.single("image"), updateSingleProduct);
 productRoutes.patch("/:id", authorize("deleteProduct"), deleteSingleProduct);

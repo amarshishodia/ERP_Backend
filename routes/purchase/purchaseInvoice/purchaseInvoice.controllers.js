@@ -511,6 +511,8 @@ const getAllPurchaseInvoice = async (req, res) => {
         return {
           ...item,
           paid_amount: item.paid_amount,
+          // Invoice-level additional discount only (matches PDF); discount below includes payment discount earned
+          bill_discount_amount: item.discount,
           discount: item.discount + discountEarned,
           due_amount: item.due_amount,
           paid_amount_from_transactions: paidAmountFromTransactions,

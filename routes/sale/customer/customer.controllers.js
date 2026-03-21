@@ -1,6 +1,14 @@
 const { getPagination } = require("../../../utils/query");
 const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
+const {
+  sumSaleDueByCustomerId,
+  attachCustomerBalance,
+} = require("../../../utils/partyBalance");
+const {
+  sumSaleCashReceiptAmounts,
+  netBilledSaleAmount,
+} = require("../../../utils/saleInvoiceAmounts");
 
 const createSingleCustomer = async (req, res) => {
   // Get company_id from logged-in user
@@ -130,20 +138,14 @@ const getAllCustomer = async (req, res) => {
         orderBy: {
           id: "asc",
         },
-        include: {
-          saleInvoice: {
-            where: {
-              company_id: companyId,
-            },
-          },
-        },
         where: {
           status: req.query.status === "false" ? false : true,
           company_id: companyId,
         },
       });
+      const dueMap = await sumSaleDueByCustomerId(prisma, companyId);
       console.log("Found customers:", allCustomer.length);
-      res.json(allCustomer);
+      res.json(attachCustomerBalance(allCustomer, dueMap));
     } catch (error) {
       res.status(400).json(error.message);
       console.log(error.message);
@@ -168,13 +170,6 @@ const getAllCustomer = async (req, res) => {
         orderBy: {
           id: "asc",
         },
-        include: {
-          saleInvoice: {
-            where: {
-              company_id: companyId,
-            },
-          },
-        },
         where: {
           status: false,
           company_id: companyId,
@@ -182,7 +177,8 @@ const getAllCustomer = async (req, res) => {
         skip: parseInt(skip),
         take: parseInt(limit),
       });
-      res.json(allCustomer);
+      const dueMap = await sumSaleDueByCustomerId(prisma, companyId);
+      res.json(attachCustomerBalance(allCustomer, dueMap));
     } catch (error) {
       res.status(400).json(error.message);
       console.log(error.message);
@@ -197,19 +193,13 @@ const getAllCustomer = async (req, res) => {
         },
         skip: parseInt(skip),
         take: parseInt(limit),
-        include: {
-          saleInvoice: {
-            where: {
-              company_id: companyId,
-            },
-          },
-        },
         where: {
           status: true,
           company_id: companyId,
         },
       });
-      res.json(allCustomer);
+      const dueMap = await sumSaleDueByCustomerId(prisma, companyId);
+      res.json(attachCustomerBalance(allCustomer, dueMap));
     } catch (error) {
       res.status(400).json(error.message);
       console.log(error.message);
@@ -313,14 +303,6 @@ const getSingleCustomer = async (req, res) => {
           in: allSaleInvoiceId,
         },
         company_id: companyId,
-        OR: [
-          {
-            debit_id: 1,
-          },
-          {
-            debit_id: 2,
-          },
-        ],
       },
       include: {
         debit: {
@@ -388,9 +370,10 @@ const getSingleCustomer = async (req, res) => {
         },
       },
     });
-    const totalPaidAmount = allSaleTransaction.reduce((acc, cur) => {
-      return acc + cur.amount;
-    }, 0);
+    const totalPaidAmount = customersAllInvoice.saleInvoice.reduce(
+      (acc, inv) => acc + sumSaleCashReceiptAmounts(allSaleTransaction, inv.id),
+      0
+    );
     const paidAmountReturn = allReturnSaleTransaction.reduce((acc, cur) => {
       return acc + cur.amount;
     }, 0);
@@ -424,25 +407,14 @@ const getSingleCustomer = async (req, res) => {
     console.log("totalDiscountGiven", totalDiscountGiven);
     console.log("TotalReturnSaleInvoice", TotalReturnSaleInvoice);
     console.log("paidAmountReturn", paidAmountReturn);
-    const due_amount =
-      parseFloat(allSaleInvoiceTotalAmount._sum.total_amount) -
-      parseFloat(allSaleInvoiceTotalAmount._sum.discount) -
-      parseFloat(totalPaidAmount) -
-      parseFloat(totalDiscountGiven) -
-      parseFloat(TotalReturnSaleInvoice) +
-      parseFloat(paidAmountReturn);
-    console.log("due_amount", due_amount);
-
-    // include due_amount in singleCustomer
-    singleCustomer.due_amount = due_amount ? due_amount : 0;
+    // Per-invoice due is computed below; total customer due = sum of those
+    singleCustomer.due_amount = 0;
     singleCustomer.allReturnSaleInvoice = allReturnSaleInvoice.flat();
     singleCustomer.allTransaction = allTransaction;
     //==================== UPDATE customer's purchase invoice information START====================
     // async is used for not blocking the main thread
     const updatedInvoices = singleCustomer.saleInvoice.map(async (item) => {
-      const paidAmount = allSaleTransaction
-        .filter((transaction) => transaction.related_id === item.id)
-        .reduce((acc, curr) => acc + curr.amount, 0);
+      const paidAmount = sumSaleCashReceiptAmounts(allSaleTransaction, item.id);
       const paidAmountReturn = allReturnSaleTransaction
         .filter((transaction) => transaction.related_id === item.id)
         .reduce((acc, curr) => acc + curr.amount, 0);
@@ -455,20 +427,27 @@ const getSingleCustomer = async (req, res) => {
           (returnSaleInvoice) => returnSaleInvoice.saleInvoice_id === item.id
         )
         .reduce((acc, curr) => acc + curr.total_amount, 0);
+      const mergedDiscount = Number(item.discount || 0) + singleDiscountGiven;
+      const netBilled = netBilledSaleAmount({
+        ...item,
+        discount: mergedDiscount,
+      });
+      const dueAmount = Math.max(
+        0,
+        netBilled - paidAmount - returnAmount + paidAmountReturn
+      );
       return {
         ...item,
         paid_amount: paidAmount,
-        discount: item.discount + singleDiscountGiven,
-        due_amount:
-          item.total_amount -
-          item.discount -
-          paidAmount -
-          returnAmount +
-          paidAmountReturn -
-          singleDiscountGiven,
+        discount: mergedDiscount,
+        due_amount: dueAmount,
       };
     });
     singleCustomer.saleInvoice = await Promise.all(updatedInvoices);
+    singleCustomer.due_amount = singleCustomer.saleInvoice.reduce(
+      (sum, inv) => sum + Number(inv.due_amount || 0),
+      0
+    );
     //==================== UPDATE customer's sale invoice information END====================
 
     res.json(singleCustomer);

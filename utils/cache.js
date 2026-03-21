@@ -93,13 +93,13 @@ class CacheService {
     return await this.set(key, data, ttl);
   }
 
-  async getSearchResults(searchTerm, page = 1, limit = 20) {
-    const key = `products:search:${searchTerm}:${page}:${limit}`;
+  async getSearchResults(searchTerm, page = 1, limit = 20, onlyLedgerStock = false) {
+    const key = `products:search:${searchTerm}:${page}:${limit}:ol:${onlyLedgerStock ? 1 : 0}`;
     return await this.get(key);
   }
 
-  async setSearchResults(searchTerm, page = 1, limit = 20, data, ttl = 180) {
-    const key = `products:search:${searchTerm}:${page}:${limit}`;
+  async setSearchResults(searchTerm, page = 1, limit = 20, data, ttl = 180, onlyLedgerStock = false) {
+    const key = `products:search:${searchTerm}:${page}:${limit}:ol:${onlyLedgerStock ? 1 : 0}`;
     return await this.set(key, data, ttl);
   }
 

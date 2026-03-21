@@ -111,7 +111,8 @@ const editSingleSaleInvoice = async (req, res) => {
         profit:
           totalSalePrice -
           totalProductDiscount -
-          additionalDiscount -
+          additionalDiscount +
+          roundOffAmount -
           totalPurchasePrice,
         due_amount: dueAmount,
         // Update other invoice fields as needed based on req.body

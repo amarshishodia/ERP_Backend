@@ -8,6 +8,51 @@ require("dotenv").config();
 const PORT = process.env.PORT || 5001;
 const HOST = process.env.HOST || "http://localhost";
 
+/**
+ * Group stock ledger rows by location with total qty and weighted avg purchase price.
+ * sale_price / list_price are product-level; passed through for UI.
+ */
+const aggregateStocksByLocation = (stockEntries, salePrice, listPrice) => {
+  if (!Array.isArray(stockEntries) || stockEntries.length === 0) return [];
+  const byLoc = new Map();
+  for (const e of stockEntries) {
+    const locId = e.location_id != null ? e.location_id : e.location?.id ?? null;
+    const key = locId != null ? String(locId) : "_no_location";
+    if (!byLoc.has(key)) {
+      byLoc.set(key, {
+        location_id: locId,
+        location_name: e.location?.name ?? (locId == null ? "—" : "—"),
+        quantity: 0,
+        costNumerator: 0,
+      });
+    }
+    const row = byLoc.get(key);
+    if (e.location?.name) row.location_name = e.location.name;
+    const q = Number(e.quantity) || 0;
+    const p = Number(e.purchase_price) || 0;
+    row.quantity += q;
+    row.costNumerator += q * p;
+  }
+  return Array.from(byLoc.values()).map((row) => ({
+    location_id: row.location_id,
+    location_name: row.location_name,
+    quantity: row.quantity,
+    avg_purchase_price: row.quantity > 0 ? row.costNumerator / row.quantity : 0,
+    sale_price: salePrice != null ? Number(salePrice) : null,
+    list_price: listPrice != null ? Number(listPrice) : null,
+  }));
+};
+
+/** Product IDs that have at least one row in `stock` for this company (any net qty, including negative). */
+const getProductIdsWithLedgerStockRows = async (companyIdNum) => {
+  const byProduct = await prisma.stock.groupBy({
+    by: ["product_id"],
+    where: { company_id: companyIdNum },
+    _sum: { quantity: true },
+  });
+  return byProduct.map((row) => row.product_id);
+};
+
 const createSingleProduct = async (req, res) => {
   // Get company_id from logged-in user
   const companyId = await getCompanyId(req.auth.sub);
@@ -468,6 +513,17 @@ const getAllProduct = async (req, res) => {
 
       const whereCondition = { status };
 
+      // Product list "My Stock": products with any `stock` ledger row for this company (net may be negative)
+      const onlyLedgerStock =
+        req.query.only_ledger_stock === "true" || req.query.only_ledger_stock === "1";
+      if (onlyLedgerStock) {
+        const inStockProductIds = await getProductIdsWithLedgerStockRows(companyId);
+        if (inStockProductIds.length === 0) {
+          return res.json({ data: [] });
+        }
+        whereCondition.id = { in: inStockProductIds };
+      }
+
       let orderBy = { id: "desc" };
       if (sortBy === "name" || sortBy === "title") {
         orderBy = { name: sortOrder };
@@ -479,36 +535,70 @@ const getAllProduct = async (req, res) => {
         orderBy = { book_publisher: { name: sortOrder } };
       }
 
+      const includeBase = {
+        product_category: { select: { name: true } },
+        product_categories: {
+          include: { product_category: { select: { id: true, name: true } } },
+        },
+        product_currency: {
+          select: { id: true, name: true, symbol: true, conversion: true },
+        },
+        book_publisher: { select: { name: true } },
+        product_stock: {
+          where: { company_id: companyId },
+          select: { quantity: true, reorder_quantity: true, list_price: true },
+        },
+      };
+      if (viewMode === "stock" || onlyLedgerStock) {
+        includeBase.stock_entries = {
+          where: { company_id: companyId },
+          select: {
+            quantity: true,
+            purchase_price: true,
+            location_id: true,
+            location: { select: { id: true, name: true } },
+          },
+          orderBy: { id: "asc" },
+        };
+      }
+
       const allProduct = await prisma.product.findMany({
         where: whereCondition,
         orderBy,
-        include: {
-          product_category: { select: { name: true } },
-          product_categories: {
-            include: { product_category: { select: { id: true, name: true } } },
-          },
-          product_currency: {
-            select: { id: true, name: true, symbol: true, conversion: true }
-          },
-          book_publisher: { select: { name: true } },
-          product_stock: {
-            where: { company_id: companyId },
-            select: { quantity: true, reorder_quantity: true, list_price: true },
-          },
-        },
+        include: includeBase,
       });
 
-      const productsWithImages = allProduct.map(product => {
+      let productsWithImages = allProduct.map((product) => {
         const stock = product.product_stock && product.product_stock.length > 0 ? product.product_stock[0] : null;
-        const categories = product.product_categories?.map(pc => pc.product_category) || [];
+        const categories = product.product_categories?.map((pc) => pc.product_category) || [];
+        const entries = product.stock_entries || [];
+        const stocksByLocation = aggregateStocksByLocation(
+          entries,
+          product.sale_price,
+          stock?.list_price ?? null
+        );
+        const totalFromEntries = stocksByLocation.reduce((s, r) => s + r.quantity, 0);
+        const quantity =
+          stocksByLocation.length > 0 ? totalFromEntries : stock ? stock.quantity : 0;
+        const { stock_entries, ...rest } = product;
         return {
-          ...product,
+          ...rest,
           categories,
-          quantity: stock ? stock.quantity : 0,
+          quantity,
           reorder_quantity: stock ? stock.reorder_quantity : null,
-          imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null
+          stocks_by_location:
+            viewMode === "stock" || onlyLedgerStock ? stocksByLocation : undefined,
+          imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null,
         };
       });
+
+      // Drop rows with no ledger-derived locations (should not happen if id filter matches stock table)
+      if (onlyLedgerStock) {
+        productsWithImages = productsWithImages.filter((p) => {
+          const rows = p.stocks_by_location || [];
+          return rows.length > 0;
+        });
+      }
 
       res.json({ data: productsWithImages });
     } catch (error) {
@@ -520,50 +610,89 @@ const getAllProduct = async (req, res) => {
       const searchTerm = req.query.prod || "";
       const page = parseInt(req.query.page) || 1;
       const limit = parseInt(req.query.limit) || 20; // Smaller limit for search results
+      const searchOnlyLedger =
+        req.query.only_ledger_stock === "true" || req.query.only_ledger_stock === "1";
 
       // Try to get from cache first
-      const cachedData = await cacheService.getSearchResults(searchTerm, page, limit);
-      
+      const cachedData = await cacheService.getSearchResults(searchTerm, page, limit, searchOnlyLedger);
+
       if (cachedData) {
-        console.log('Search results served from cache');
+        console.log("Search results served from cache");
         return res.json(cachedData);
       }
 
       const skip = (page - 1) * limit;
 
       // Build search conditions (MySQL doesn't support mode: insensitive)
-      const searchConditions = searchTerm ? {
-        OR: [
-          { name: { contains: searchTerm } },
-          { isbn: { contains: searchTerm } },
-          { author: { contains: searchTerm } },
-          { sku: { contains: searchTerm } },
-          { book_publisher: { name: { contains: searchTerm } } },
-        ],
-        status: true,
-      } : { status: true };
+      const searchConditions = searchTerm
+        ? {
+            OR: [
+              { name: { contains: searchTerm } },
+              { isbn: { contains: searchTerm } },
+              { author: { contains: searchTerm } },
+              { sku: { contains: searchTerm } },
+              { book_publisher: { name: { contains: searchTerm } } },
+            ],
+            status: true,
+          }
+        : { status: true };
+
+      let whereForSearch = searchConditions;
+      if (searchOnlyLedger) {
+        const ledgerIds = await getProductIdsWithLedgerStockRows(companyId);
+        if (ledgerIds.length === 0) {
+          const emptyResp = {
+            data: [],
+            pagination: {
+              currentPage: page,
+              totalPages: 0,
+              totalItems: 0,
+              itemsPerPage: limit,
+              hasNextPage: false,
+              hasPrevPage: page > 1,
+            },
+          };
+          await cacheService.setSearchResults(searchTerm, page, limit, emptyResp, 180, searchOnlyLedger);
+          return res.json(emptyResp);
+        }
+        whereForSearch = { AND: [searchConditions, { id: { in: ledgerIds } }] };
+      }
 
       const totalCount = await prisma.product.count({
-        where: searchConditions
+        where: whereForSearch,
       });
 
-      const allProduct = await prisma.product.findMany({
-        where: searchConditions,
-        orderBy: { id: "desc" },
-        include: {
-          product_category: { select: { name: true } },
-          product_categories: {
-            include: { product_category: { select: { id: true, name: true } } },
-          },
-          product_currency: {
-            select: { id: true, name: true, symbol: true, conversion: true },
-          },
-          book_publisher: { select: { name: true } },
-          product_stock: {
-            where: { company_id: companyId },
-            select: { quantity: true, reorder_quantity: true, list_price: true },
-          },
+      const searchInclude = {
+        product_category: { select: { name: true } },
+        product_categories: {
+          include: { product_category: { select: { id: true, name: true } } },
         },
+        product_currency: {
+          select: { id: true, name: true, symbol: true, conversion: true },
+        },
+        book_publisher: { select: { name: true } },
+        product_stock: {
+          where: { company_id: companyId },
+          select: { quantity: true, reorder_quantity: true, list_price: true },
+        },
+      };
+      if (searchOnlyLedger) {
+        searchInclude.stock_entries = {
+          where: { company_id: companyId },
+          select: {
+            quantity: true,
+            purchase_price: true,
+            location_id: true,
+            location: { select: { id: true, name: true } },
+          },
+          orderBy: { id: "asc" },
+        };
+      }
+
+      const allProduct = await prisma.product.findMany({
+        where: whereForSearch,
+        orderBy: { id: "desc" },
+        include: searchInclude,
         skip: skip,
         take: limit,
       });
@@ -617,18 +746,41 @@ const getAllProduct = async (req, res) => {
         });
       }
 
-      // Optimize image URL generation and add quantity from stock
-      const productsWithImages = allProduct.map(product => {
+      // Optimize image URL generation and add quantity from stock / ledger
+      let productsWithImages = allProduct.map((product) => {
         const stock = product.product_stock && product.product_stock.length > 0 ? product.product_stock[0] : null;
-        const categories = product.product_categories?.map(pc => pc.product_category) || [];
-        return {
-          ...product,
+        const categories = product.product_categories?.map((pc) => pc.product_category) || [];
+        const entries = product.stock_entries || [];
+        const stocksByLocation = searchOnlyLedger
+          ? aggregateStocksByLocation(entries, product.sale_price, stock?.list_price ?? null)
+          : [];
+        const totalFromEntries = stocksByLocation.reduce((s, r) => s + r.quantity, 0);
+        const quantity =
+          searchOnlyLedger && stocksByLocation.length > 0
+            ? totalFromEntries
+            : stock
+              ? stock.quantity
+              : 0;
+        const { stock_entries, ...rest } = product;
+        const row = {
+          ...rest,
           categories,
-          quantity: stock ? stock.quantity : 0,
+          quantity,
           reorder_quantity: stock ? stock.reorder_quantity : null,
-          imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null
+          imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null,
         };
+        if (searchOnlyLedger) {
+          row.stocks_by_location = stocksByLocation;
+        }
+        return row;
       });
+
+      if (searchOnlyLedger) {
+        productsWithImages = productsWithImages.filter((p) => {
+          const rows = p.stocks_by_location || [];
+          return rows.length > 0;
+        });
+      }
 
       const responseData = {
         data: productsWithImages,
@@ -638,12 +790,12 @@ const getAllProduct = async (req, res) => {
           totalItems: totalCount,
           itemsPerPage: limit,
           hasNextPage: page < Math.ceil(totalCount / limit),
-          hasPrevPage: page > 1
-        }
+          hasPrevPage: page > 1,
+        },
       };
 
       // Cache the search results
-      await cacheService.setSearchResults(searchTerm, page, limit, responseData, 180); // 3 minutes cache
+      await cacheService.setSearchResults(searchTerm, page, limit, responseData, 180, searchOnlyLedger); // 3 minutes cache
 
       res.json(responseData);
     } catch (error) {
@@ -848,6 +1000,13 @@ const getSingleProduct = async (req, res) => {
     // Add quantity from stock
     singleProduct.quantity = singleProduct.product_stock[0].quantity;
     singleProduct.reorder_quantity = singleProduct.product_stock[0].reorder_quantity;
+
+    const listPrice = singleProduct.product_stock[0]?.list_price ?? null;
+    singleProduct.stocks_by_location = aggregateStocksByLocation(
+      singleProduct.stock_entries || [],
+      singleProduct.sale_price,
+      listPrice
+    );
     
     // Add categories array
     singleProduct.categories = singleProduct.product_categories?.map(pc => pc.product_category) || [];
@@ -1223,6 +1382,92 @@ const getProductHistory = async (req, res) => {
 
 
 
+/**
+ * PATCH .../product/:id/sync-list-price — update product.sale_price + company product_stock.list_price only.
+ */
+const patchProductListPriceSync = async (req, res) => {
+  try {
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    const productId = Number(req.params.id);
+    const listPrice = parseFloat(req.body.list_price);
+    if (!Number.isFinite(listPrice) || listPrice < 0) {
+      return res.status(400).json({ error: "Invalid list_price" });
+    }
+
+    const existing = await prisma.product.findUnique({ where: { id: productId } });
+    if (!existing) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    await prisma.product.update({
+      where: { id: productId },
+      data: { sale_price: listPrice },
+    });
+
+    const ps = await prisma.product_stock.findUnique({
+      where: {
+        product_id_company_id: {
+          product_id: productId,
+          company_id: companyId,
+        },
+      },
+    });
+
+    if (ps) {
+      await prisma.product_stock.update({
+        where: { id: ps.id },
+        data: { list_price: listPrice },
+      });
+    } else {
+      await prisma.product_stock.create({
+        data: {
+          product_id: productId,
+          company_id: companyId,
+          quantity: 0,
+          list_price: listPrice,
+        },
+      });
+    }
+
+    res.json({ ok: true, product_id: productId, list_price: listPrice });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+    console.log(error.message);
+  }
+};
+
+/**
+ * PATCH .../product/:id/sync-purchase-price — update product.purchase_price only (cost on master).
+ */
+const patchProductPurchasePriceSync = async (req, res) => {
+  try {
+    const productId = Number(req.params.id);
+    const purchasePrice = parseFloat(req.body.purchase_price);
+    if (!Number.isFinite(purchasePrice) || purchasePrice < 0) {
+      return res.status(400).json({ error: "Invalid purchase_price" });
+    }
+
+    const existing = await prisma.product.findUnique({ where: { id: productId } });
+    if (!existing) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    await prisma.product.update({
+      where: { id: productId },
+      data: { purchase_price: purchasePrice },
+    });
+
+    res.json({ ok: true, product_id: productId, purchase_price: purchasePrice });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+    console.log(error.message);
+  }
+};
+
 module.exports = {
   createSingleProduct,
   getAllProduct,
@@ -1230,5 +1475,6 @@ module.exports = {
   updateSingleProduct,
   deleteSingleProduct,
   getProductHistory,
- 
+  patchProductListPriceSync,
+  patchProductPurchasePriceSync,
 };

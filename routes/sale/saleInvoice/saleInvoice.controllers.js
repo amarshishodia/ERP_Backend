@@ -2,6 +2,10 @@ const { getPagination } = require("../../../utils/query");
 const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
 const { createTransactionWithSubAccounts } = require("../../../utils/transactionHelper");
+const {
+  sumSaleCashReceiptAmounts,
+  netBilledSaleAmount,
+} = require("../../../utils/saleInvoiceAmounts");
 
 const createSingleSaleInvoice = async (req, res) => {
   try {
@@ -250,7 +254,8 @@ const createSingleSaleInvoice = async (req, res) => {
         profit:
           totalSalePrice -
           totalProductDiscount -
-          additionalDiscount -
+          additionalDiscount +
+          roundOffAmount -
           totalPurchasePrice,
         due_amount: dueAmount,
         ...(sales_order_id ? { sales_order: { connect: { id: sales_order_id } } } : {}),
@@ -782,6 +787,7 @@ const getAllSaleInvoice = async (req, res) => {
         }
       }
       // modify data to actual data of sale invoice's current value by adjusting with transactions and returns
+      // All sale ledger lines for these invoices (filter in JS — cash account id may not be 1/2)
       const transactions = await prisma.transaction.findMany({
         where: {
           type: "sale",
@@ -789,14 +795,6 @@ const getAllSaleInvoice = async (req, res) => {
             in: saleInvoices.map((item) => item.id),
           },
           company_id: companyId,
-          OR: [
-            {
-              debit_id: 1,
-            },
-            {
-              debit_id: 2,
-            },
-          ],
         },
       });
       // the return that paid back to customer on return invoice
@@ -850,9 +848,7 @@ const getAllSaleInvoice = async (req, res) => {
       });
       // calculate paid amount and due amount of individual sale invoice from transactions and returnSaleInvoice and attach it to saleInvoices
       const allSaleInvoice = saleInvoices.map((item) => {
-        const paidAmount = transactions
-          .filter((transaction) => transaction.related_id === item.id)
-          .reduce((acc, curr) => acc + curr.amount, 0);
+        const paidAmount = sumSaleCashReceiptAmounts(transactions, item.id);
         const paidAmountReturn = transactions2
           .filter((transaction) => transaction.related_id === item.id)
           .reduce((acc, curr) => acc + curr.amount, 0);
@@ -864,6 +860,15 @@ const getAllSaleInvoice = async (req, res) => {
             (returnSaleInvoice) => returnSaleInvoice.saleInvoice_id === item.id
           )
           .reduce((acc, curr) => acc + curr.total_amount, 0);
+        const mergedDiscount = Number(item.discount || 0) + discountGiven;
+        const netBilled = netBilledSaleAmount({
+          ...item,
+          discount: mergedDiscount,
+        });
+        const dueAmount = Math.max(
+          0,
+          netBilled - paidAmount - returnAmount + paidAmountReturn
+        );
         const totalUnitMeasurement = item.saleInvoiceProduct.reduce(
           (acc, curr) =>
             acc +
@@ -874,11 +879,10 @@ const getAllSaleInvoice = async (req, res) => {
         return {
           ...item,
           paid_amount: paidAmount,
-          discount: item.discount + discountGiven,
-          // item.total_amount already includes discount and round_off_amount
-          // So we only need to subtract payments, returns, and additional discounts given at payment time
-          // 
-          due_amount: item.due_amount,
+          // Invoice-level additional discount only (matches sale PDF); discount below includes payment discount given
+          bill_discount_amount: Number(item.discount || 0),
+          discount: mergedDiscount,
+          due_amount: dueAmount,
           total_unit_measurement: totalUnitMeasurement,
         };
       });
@@ -991,37 +995,6 @@ const getSingleSaleInvoice = async (req, res) => {
         },
       },
     });
-    // transactions of the paid amount
-    const transactions2 = await prisma.transaction.findMany({
-      where: {
-        type: "sale",
-        related_id: Number(req.params.id),
-        company_id: companyId,
-        OR: [
-          {
-            debit_id: 1,
-          },
-          {
-            debit_id: 2,
-          },
-        ],
-        // credit_id: {
-        //   not: null, // Only include transactions with valid credit_id
-        // },
-      },
-      include: {
-        debit: {
-          select: {
-            name: true,
-          },
-        },
-        credit: {
-          select: {
-            name: true,
-          },
-        },
-      },
-    });
     // for total return amount
     const returnSaleInvoice = await prisma.returnSaleInvoice.findMany({
       where: {
@@ -1097,36 +1070,27 @@ const getSingleSaleInvoice = async (req, res) => {
       0
     );
     let status = "UNPAID";
-    // sum total amount of all transactions
-    const totalPaidAmount = transactions2.reduce(
-      (acc, item) => acc + item.amount,
-      0
-    );
-    // sum of total discount given amount at the time of make the payment
+    const saleTx = transactions.filter((t) => t.type === "sale");
+    const totalPaidAmount = sumSaleCashReceiptAmounts(saleTx, singleSaleInvoice.id);
     const totalDiscountAmount = transactions3.reduce(
       (acc, item) => acc + item.amount,
       0
     );
-    // check if total transaction amount is equal to total_amount - discount - return invoice amount
     const totalReturnAmount = returnSaleInvoice.reduce(
       (acc, item) => acc + item.total_amount,
       0
     );
-    console.log(singleSaleInvoice.total_amount);
-    console.log(singleSaleInvoice.discount);
-    console.log(totalPaidAmount);
-    console.log(totalDiscountAmount);
-    console.log(totalReturnAmount);
-    console.log(paidAmountReturn);
-    // const dueAmount =
-    //   singleSaleInvoice.total_amount -
-    //   singleSaleInvoice.discount -
-    //   totalPaidAmount -
-    //   totalDiscountAmount -
-    //   totalReturnAmount +
-    //   paidAmountReturn;
-    const dueAmount = singleSaleInvoice.due_amount;
-    if (dueAmount === 0) {
+    const mergedDiscount =
+      Number(singleSaleInvoice.discount || 0) + totalDiscountAmount;
+    const netBilled = netBilledSaleAmount({
+      ...singleSaleInvoice,
+      discount: mergedDiscount,
+    });
+    const dueAmount = Math.max(
+      0,
+      netBilled - totalPaidAmount - totalReturnAmount + paidAmountReturn
+    );
+    if (dueAmount <= 0.005) {
       status = "PAID";
     }
     // calculate total unit_measurement
@@ -1142,7 +1106,12 @@ const getSingleSaleInvoice = async (req, res) => {
       totalReturnAmount,
       dueAmount,
       totalUnitMeasurement,
-      singleSaleInvoice,
+      singleSaleInvoice: {
+        ...singleSaleInvoice,
+        paid_amount: totalPaidAmount,
+        discount: mergedDiscount,
+        due_amount: dueAmount,
+      },
       returnSaleInvoice,
       transactions,
     });
@@ -1273,7 +1242,8 @@ const updateSingleSaleInvoice = async (req, res) => {
         profit:
           totalSalePrice -
           totalProductDiscount -
-          additionalDiscount -
+          additionalDiscount +
+          roundOffAmount -
           totalPurchasePrice,
         due_amount: dueAmount,
         customer: {

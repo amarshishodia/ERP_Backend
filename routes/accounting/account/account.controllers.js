@@ -2,6 +2,31 @@ const { getPagination } = require("../../../utils/query");
 const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
 
+/**
+ * Sale invoice: DB `total_amount` is gross (before line + bill discounts).
+ * Net billed = gross − product-line discount amount − bill discount + round-off (when enabled).
+ * Matches `finalTotal` used for due_amount at invoice creation.
+ */
+function netSaleInvoiceBilled(inv) {
+  const gross = Number(inv.total_amount ?? 0);
+  const prodDisc = Number(inv.total_product_discount ?? 0);
+  const billDisc = Number(inv.discount ?? 0);
+  const ro = inv.round_off_enabled ? Number(inv.round_off_amount ?? 0) : 0;
+  const n = gross - prodDisc - billDisc + ro;
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Purchase invoice: DB `total_amount` is already subtotal after line discounts + round-off;
+ * bill-level discount is stored separately in `discount`.
+ */
+function netPurchaseInvoiceBilled(inv) {
+  const total = Number(inv.total_amount ?? 0);
+  const billDisc = Number(inv.discount ?? 0);
+  const n = total - billDisc;
+  return Number.isFinite(n) ? n : 0;
+}
+
 const createSingleAccount = async (req, res) => {
   try {
     // Get company_id from logged-in user
@@ -365,6 +390,8 @@ const getAllAccount = async (req, res) => {
           customer_id: true,
           total_amount: true,
           profit: true,
+          total_product_discount: true,
+          discount: true,
           customer: { select: { id: true, name: true } },
         },
       });
@@ -373,6 +400,8 @@ const getAllAccount = async (req, res) => {
         select: {
           supplier_id: true,
           total_amount: true,
+          total_product_discount: true,
+          discount: true,
           supplier: { select: { id: true, name: true } },
         },
       });
@@ -384,11 +413,15 @@ const getAllAccount = async (req, res) => {
             id: inv.customer?.id,
             name: inv.customer?.name ?? "N/A",
             totalSales: 0,
+            totalLineDiscount: 0,
+            totalAdditionalDiscount: 0,
             profit: 0,
           });
         }
         const row = customerMap.get(key);
         row.totalSales += Number(inv.total_amount);
+        row.totalLineDiscount += Number(inv.total_product_discount ?? 0);
+        row.totalAdditionalDiscount += Number(inv.discount ?? 0);
         row.profit += Number(inv.profit ?? 0);
       });
       const supplierMap = new Map();
@@ -399,9 +432,14 @@ const getAllAccount = async (req, res) => {
             id: inv.supplier?.id,
             name: inv.supplier?.name ?? "N/A",
             totalPurchases: 0,
+            totalLineDiscount: 0,
+            totalAdditionalDiscount: 0,
           });
         }
-        supplierMap.get(key).totalPurchases += Number(inv.total_amount);
+        const row = supplierMap.get(key);
+        row.totalPurchases += Number(inv.total_amount);
+        row.totalLineDiscount += Number(inv.total_product_discount ?? 0);
+        row.totalAdditionalDiscount += Number(inv.discount ?? 0);
       });
       res.json({
         customerWise: Array.from(customerMap.values()),
@@ -418,6 +456,10 @@ const getAllAccount = async (req, res) => {
         select: {
           customer_id: true,
           total_amount: true,
+          total_product_discount: true,
+          discount: true,
+          round_off_enabled: true,
+          round_off_amount: true,
           paid_amount: true,
           due_amount: true,
           customer: { select: { id: true, name: true, phone: true } },
@@ -438,7 +480,7 @@ const getAllAccount = async (req, res) => {
           });
         }
         const row = customerMap.get(key);
-        row.total_billed += Number(inv.total_amount ?? 0);
+        row.total_billed += netSaleInvoiceBilled(inv);
         row.total_received += Number(inv.paid_amount ?? 0);
         row.total_due += Number(inv.due_amount ?? 0);
         row.invoice_count += 1;
@@ -456,6 +498,7 @@ const getAllAccount = async (req, res) => {
         select: {
           supplier_id: true,
           total_amount: true,
+          discount: true,
           paid_amount: true,
           due_amount: true,
           supplier: { select: { id: true, name: true, phone: true } },
@@ -476,7 +519,7 @@ const getAllAccount = async (req, res) => {
           });
         }
         const row = supplierMap.get(key);
-        row.total_billed += Number(inv.total_amount ?? 0);
+        row.total_billed += netPurchaseInvoiceBilled(inv);
         row.total_paid += Number(inv.paid_amount ?? 0);
         row.total_due += Number(inv.due_amount ?? 0);
         row.invoice_count += 1;
@@ -635,6 +678,8 @@ const getPartyStatement = async (req, res) => {
           date: true,
           invoice_number: true,
           total_amount: true,
+          total_product_discount: true,
+          discount: true,
           paid_amount: true,
           due_amount: true,
           prefix: true,
@@ -668,7 +713,11 @@ const getPartyStatement = async (req, res) => {
         select: {
           id: true,
           date: true,
+          invoice_number: true,
+          prefix: true,
           total_amount: true,
+          total_product_discount: true,
+          discount: true,
           paid_amount: true,
           due_amount: true,
         },
