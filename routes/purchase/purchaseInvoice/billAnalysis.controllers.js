@@ -4,10 +4,13 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const pdf = require('pdf-parse');
+const XLSX = require('xlsx');
 const { jsonrepair } = require('jsonrepair');
 
 const MAX_OPENAI_INPUT_LENGTH = 200000; // ~50k tokens approximation
 const TEXT_CHUNK_SIZE = 14000;
+/** Chunk text PDFs above this size so each API call can return a complete products array (avoids output truncation on long bills). */
+const TEXT_CHUNKING_THRESHOLD = 8000;
 
 // Initialize OpenAI
 const openai = new OpenAI({
@@ -42,6 +45,27 @@ const upload = multer({
       cb(new Error('Invalid file type. Only images and PDF files are allowed.'));
     }
   }
+});
+
+const excelUpload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 15 * 1024 * 1024,
+  },
+  fileFilter: function (req, file, cb) {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const allowedExt = ['.xlsx', '.xls'];
+    const allowedMime = [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+      'application/octet-stream',
+    ];
+    if (allowedExt.includes(ext) || allowedMime.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only Excel files (.xlsx, .xls) are allowed.'));
+    }
+  },
 });
 
 // Function to encode image to base64
@@ -115,10 +139,12 @@ const analyzeBillContent = async (content, contentType = 'image') => {
       throw new Error('No content provided for analysis');
     }
 
+    // Text PDFs above threshold: process in chunks so each response can list all line items in that segment (single-call extraction often truncates long product lists).
+    if (contentType === 'text' && typeof content === 'string' && content.length > TEXT_CHUNKING_THRESHOLD) {
+      return await analyzeLargeTextContent(content);
+    }
+
     if (typeof content === 'string' && content.length > MAX_OPENAI_INPUT_LENGTH) {
-      if (contentType === 'text') {
-        return await analyzeLargeTextContent(content);
-      }
       throw new Error('Bill content exceeds the maximum size supported for analysis. Please upload a smaller file or a PDF with selectable text.');
     }
 
@@ -155,7 +181,8 @@ const analyzeBillContent = async (content, contentType = 'image') => {
           If any field is not found, use null for strings/objects or 0 for numbers.
           For currency, try to identify the symbol (₹, $, €, etc.) or code (INR, USD, EUR, etc.).
           For ISBN, look for 10 or 13 digit numbers, often prefixed with "ISBN".
-          Be very careful to extract accurate numerical values for price and quantity.`
+          Be very careful to extract accurate numerical values for price and quantity.
+          Include every line item in the products array—do not truncate or return only the first few rows.`
         },
         {
           role: "user",
@@ -202,6 +229,7 @@ const analyzeBillContent = async (content, contentType = 'image') => {
             ]
           }
           
+          Important: include EVERY book line item from the bill—one object per row in the products array. Do not summarize, sample, or cap the list (e.g. do not return only the first 10 items).
           If any field is not found, use null for strings/objects or 0 for numbers.
           For currency, try to identify the symbol (₹, $, €, etc.) or code (INR, USD, EUR, etc.).
           For ISBN, look for 10 or 13 digit numbers, often prefixed with "ISBN".
@@ -217,14 +245,16 @@ const analyzeBillContent = async (content, contentType = 'image') => {
         {
           role: "system",
           content: `You are an AI assistant that extracts information from purchase bills/invoices for books.
-          You will receive a portion of the bill text. Extract whatever relevant information you can find from this portion and return it as JSON with the structure:
+          You will receive ONE portion of a longer bill. Your job is to extract EVERY book line item that appears in this portion only—do not skip, summarize, or cap the number of rows. If this chunk contains 40 table rows, the "products" array must have 40 entries (one per row).
+          Return JSON with this structure:
           {
-            "supplier": { ... },
-            "billDate": "...",
-            "billNumber": "...",
-            "products": [ ... ]
+            "supplier": { "name": "...", "phone": "...", "address": "..." },
+            "billDate": "YYYY-MM-DD or null",
+            "billNumber": "... or null",
+            "products": [ { "isbn", "title", "author", "publisher", "quantity", "price", "currency", "discount" } ]
           }
-          If a field cannot be determined from this chunk, set it to null (or 0 for numeric fields).`
+          If supplier/date/bill number are not visible in this chunk, set them to null. Use null for missing strings, 0 for missing numbers.
+          For currency and ISBN, follow the same rules as a full-bill extraction.`
         },
         {
           role: "user",
@@ -263,7 +293,8 @@ const analyzeBillContent = async (content, contentType = 'image') => {
           If any field is not found, use null for strings/objects or 0 for numbers.
           For currency, try to identify the symbol (₹, $, €, etc.) or code (INR, USD, EUR, etc.).
           For ISBN, look for 10 or 13 digit numbers, often prefixed with "ISBN".
-          Be very careful to extract accurate numerical values for price and quantity.`
+          Be very careful to extract accurate numerical values for price and quantity.
+          Include every line item on all pages in the products array—do not truncate or return only the first few rows.`
         },
         {
           role: "user",
@@ -275,7 +306,7 @@ const analyzeBillContent = async (content, contentType = 'image') => {
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
       messages: messages,
-      max_tokens: 16000,
+      max_tokens: 16384,
       temperature: 0.1,
       response_format: { type: "json_object" },
     });
@@ -367,14 +398,17 @@ const checkExistingData = async (extractedData) => {
         }
       } else {
         // If no ISBN, try to match by title and author
-        const existingProduct = await prisma.product.findFirst({
-          where: {
-            AND: [
-              product.title ? { name: { contains: product.title } } : {},
-              product.author ? { author: { contains: product.author } } : {}
-            ].filter(condition => Object.keys(condition).length > 0)
-          }
-        });
+        const andConditions = [
+          product.title ? { name: { contains: product.title } } : {},
+          product.author ? { author: { contains: product.author } } : {}
+        ].filter((condition) => Object.keys(condition).length > 0);
+
+        let existingProduct = null;
+        if (andConditions.length > 0) {
+          existingProduct = await prisma.product.findFirst({
+            where: { AND: andConditions },
+          });
+        }
 
         if (existingProduct) {
           result.existingProducts.push({
@@ -433,6 +467,265 @@ const checkExistingData = async (extractedData) => {
   }
 
   return result;
+};
+
+function normalizeExcelHeaderKey(h) {
+  return String(h ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\u00a0/g, ' ')
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+/**
+ * Pick the first column whose normalized header matches one of the candidates (exact), else substring match.
+ */
+function pickExcelColumn(headerKeys, candidates) {
+  const normalizedHeaders = headerKeys.map((raw) => ({
+    raw,
+    key: normalizeExcelHeaderKey(raw),
+  }));
+
+  for (const cand of candidates) {
+    const c = normalizeExcelHeaderKey(cand);
+    const exact = normalizedHeaders.find((h) => h.key === c);
+    if (exact) return exact.raw;
+  }
+  for (const cand of candidates) {
+    const c = normalizeExcelHeaderKey(cand);
+    const partial = normalizedHeaders.find(
+      (h) => (c.length >= 3 && (h.key.includes(c) || c.includes(h.key))) || h.key === c
+    );
+    if (partial) return partial.raw;
+  }
+  return null;
+}
+
+function parseExcelNumeric(val) {
+  if (val === '' || val == null) return 0;
+  if (typeof val === 'number' && !Number.isNaN(val)) return val;
+  const s = String(val).replace(/,/g, '').replace(/^\s*[₹$€]\s*/i, '').trim();
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeExcelIsbn(val) {
+  if (val === '' || val == null) return null;
+  // Excel often stores ISBN-13 as a number; raw:false turns it into "9.78936E+12" which is unusable.
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    if (val >= 1e9) return String(Math.round(val));
+    if (Number.isInteger(val)) return String(val);
+  }
+  let s = String(val).trim().replace(/[\s-]/g, '');
+  if (/^[\d.]+e[+-]?\d+$/i.test(s)) {
+    const n = Number(s);
+    if (Number.isFinite(n) && n >= 1e9) return String(Math.round(n));
+  }
+  if (/^\d+\.?\d*$/.test(s) && !/e/i.test(s)) {
+    const n = parseFloat(s);
+    if (Number.isFinite(n) && n >= 1e9) return String(Math.round(n));
+  }
+  return s || null;
+}
+
+function formatExcelDateMaybe(val) {
+  if (val === '' || val == null) return null;
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    return val.toISOString().slice(0, 10);
+  }
+  const s = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  return null;
+}
+
+/**
+ * Parse purchase lines from the first worksheet. No AI — column headers are matched flexibly.
+ * Expected columns (at least one of ISBN or Title per row): ISBN, Title, Author, Publisher, Price, Qty.
+ * Optional: Discount, Currency, Supplier name, Supplier phone, Supplier address, Bill date, Bill number.
+ */
+const parsePurchaseExcel = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No Excel file uploaded' });
+    }
+
+    const filePath = req.file.path;
+    let workbook;
+    try {
+      workbook = XLSX.readFile(filePath, { cellDates: true });
+    } catch (e) {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      return res.status(400).json({
+        message: 'Could not read this file. Use a valid .xlsx or .xls spreadsheet.',
+      });
+    }
+
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    // raw:true keeps ISBN-13 as numeric (large integers). raw:false formats them as "9.78936E+12".
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: true });
+
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    if (!rows.length) {
+      return res.status(400).json({
+        message: 'The spreadsheet is empty. Add a header row and at least one data row.',
+      });
+    }
+
+    const headerKeys = Object.keys(rows[0]);
+    const col = {
+      isbn: pickExcelColumn(headerKeys, ['isbn', 'isbn13', 'isbn 13', 'book isbn']),
+      title: pickExcelColumn(headerKeys, ['title', 'book title', 'book name', 'book']),
+      author: pickExcelColumn(headerKeys, ['author', 'writer']),
+      publisher: pickExcelColumn(headerKeys, ['publisher', 'pub', 'publisher name']),
+      price: pickExcelColumn(headerKeys, [
+        'price',
+        'price rs',
+        'rate',
+        'mrp',
+        'unit price',
+        'purchase price',
+        'cost',
+      ]),
+      qty: pickExcelColumn(headerKeys, ['qty', 'quantity', 'qty.', 'copies', 'nos', 'no']),
+      discount: pickExcelColumn(headerKeys, ['discount', 'disc', 'dis', 'dis %']),
+      currency: pickExcelColumn(headerKeys, ['currency', 'curr']),
+      supplierName: pickExcelColumn(headerKeys, ['supplier', 'supplier name', 'vendor', 'vendor name']),
+      supplierPhone: pickExcelColumn(headerKeys, [
+        'supplier phone',
+        'supplier contact',
+        'vendor phone',
+        'phone',
+      ]),
+      supplierAddress: pickExcelColumn(headerKeys, ['supplier address', 'vendor address', 'address']),
+      billDate: pickExcelColumn(headerKeys, ['bill date', 'invoice date', 'date', 'billdate']),
+      billNumber: pickExcelColumn(headerKeys, [
+        'bill number',
+        'invoice no',
+        'invoice number',
+        'invoice',
+        'memo',
+        'memo no',
+        'supplier memo',
+      ]),
+    };
+
+    if (!col.title && !col.isbn) {
+      return res.status(400).json({
+        message:
+          'Could not detect Title or ISBN columns. Use headers such as ISBN, Title, Author, Publisher, Price, Qty in the first row.',
+      });
+    }
+
+    let supplierMeta = null;
+    if (col.supplierName) {
+      for (const row of rows) {
+        const name = String(row[col.supplierName] ?? '').trim();
+        if (name) {
+          supplierMeta = {
+            name,
+            phone: col.supplierPhone ? String(row[col.supplierPhone] ?? '').trim() || null : null,
+            address: col.supplierAddress ? String(row[col.supplierAddress] ?? '').trim() || null : null,
+          };
+          break;
+        }
+      }
+    }
+
+    let billDate = null;
+    if (col.billDate) {
+      for (const row of rows) {
+        const d = formatExcelDateMaybe(row[col.billDate]);
+        if (d) {
+          billDate = d;
+          break;
+        }
+      }
+    }
+
+    let billNumber = null;
+    if (col.billNumber) {
+      for (const row of rows) {
+        const v = row[col.billNumber];
+        if (v !== '' && v != null) {
+          billNumber = String(v).trim();
+          if (billNumber) break;
+        }
+      }
+    }
+
+    const products = [];
+    for (const row of rows) {
+      const title = col.title ? String(row[col.title] ?? '').trim() : '';
+      const isbn = col.isbn ? normalizeExcelIsbn(row[col.isbn]) : null;
+      if (!title && !isbn) continue;
+
+      const qty = col.qty ? parseExcelNumeric(row[col.qty]) : 0;
+      const price = col.price ? parseExcelNumeric(row[col.price]) : 0;
+      const disc = col.discount ? parseExcelNumeric(row[col.discount]) : 0;
+      let currency = col.currency ? String(row[col.currency] ?? '').trim() : '';
+      if (!currency) currency = '₹';
+
+      const author = col.author ? String(row[col.author] ?? '').trim() : '';
+      const publisher = col.publisher ? String(row[col.publisher] ?? '').trim() : '';
+
+      products.push({
+        isbn: isbn || null,
+        title: title || null,
+        author: author || null,
+        publisher: publisher || null,
+        quantity: qty || 0,
+        price,
+        currency,
+        discount: disc || 0,
+      });
+    }
+
+    if (products.length === 0) {
+      return res.status(400).json({
+        message:
+          'No product rows found. Each row needs at least an ISBN or Title (empty rows are skipped).',
+      });
+    }
+
+    const seenISBNs = new Set();
+    const uniqueProducts = [];
+    for (const p of products) {
+      if (p.isbn) {
+        if (!seenISBNs.has(p.isbn)) {
+          seenISBNs.add(p.isbn);
+          uniqueProducts.push(p);
+        }
+      } else {
+        uniqueProducts.push(p);
+      }
+    }
+
+    const extractedData = {
+      supplier: supplierMeta,
+      billDate,
+      billNumber,
+      products: uniqueProducts,
+    };
+
+    const dataCheck = await checkExistingData(extractedData);
+    res.json({
+      ...extractedData,
+      ...dataCheck,
+    });
+  } catch (error) {
+    console.error('Error in parsePurchaseExcel:', error);
+    if (req.file && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (_) {}
+    }
+    res.status(500).json({
+      message: error.message || 'Failed to import Excel',
+      error: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+    });
+  }
 };
 
 // Main controller function
@@ -571,6 +864,8 @@ const analyzeNewItems = async (req, res) => {
 
 module.exports = {
   upload,
+  excelUpload,
   analyzeBill,
+  parsePurchaseExcel,
   analyzeNewItems,
 };
