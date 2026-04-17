@@ -48,6 +48,6 @@
   "devDependencies": {
     "nodemon": "^2.0.15",
     "prettier": "2.7.1",
-    "prisma": "latest"
+    "prisma": "5.6.0"
   }
 }

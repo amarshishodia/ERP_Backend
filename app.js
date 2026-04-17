@@ -36,6 +36,7 @@ const discountMasterRoutes = require("./routes/inventory/discountMaster/discount
 const locationRoutes = require("./routes/inventory/location/location.routes");
 const accountRoutes = require("./routes/accounting/account/account.routes");
 const settingRoutes = require("./routes/setting/setting.routes");
+const documentSeriesRoutes = require("./routes/setting/documentSeries.routes");
 const superAdminRoutes = require("./routes/superAdmin/superAdmin.routes");
 const ecommerceRoutes = require("./routes/ecommerce/ecommerce.routes");
 const ecommerceAdminRoutes = require("./routes/ecommerce/admin/admin.routes");
@@ -133,6 +134,7 @@ app.use("/v1/discount-master", discountMasterRoutes);
 app.use("/v1/location", locationRoutes);
 app.use("/v1/account", accountRoutes);
 app.use("/v1/setting", settingRoutes);
+app.use("/v1/document-series", documentSeriesRoutes);
 app.use("/v1/super-admin", superAdminRoutes);
 app.use("/v1/ecommerce", ecommerceRoutes);
 app.use("/v1/ecommerce/admin", ecommerceAdminRoutes);

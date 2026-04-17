@@ -1,6 +1,7 @@
 const { getPagination } = require("../../../utils/query");
 const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
+const { allocateDocumentNumber } = require("../../../utils/documentSeries");
 
 const createSingleQuotation = async (req, res) => {
   try {
@@ -9,24 +10,28 @@ const createSingleQuotation = async (req, res) => {
     if (!companyId) {
       return res.status(400).json({ error: "User company_id not found" });
     }
+    const companyIdNum = Number(companyId);
+    if (!Number.isFinite(companyIdNum)) {
+      return res.status(400).json({ error: "Invalid company_id" });
+    }
+
+    const alloc = await allocateDocumentNumber({
+      company_id: companyIdNum,
+      document_type: "quotation",
+      series_id: req.body.document_series_id,
+      requested_number: req.body.invoiceNumber,
+    });
 
     // Check if invoice number is already taken
     const existingQuotation = await prisma.quotationInvoice.findFirst({
       where: {
-        company_id: companyId,
-        OR: [
-          {
-            prefix: req.body.prefix,
-            invoice_number: Number(req.body.invoiceNumber),
-          },
-          {
-            invoice_number: Number(req.body.invoiceNumber),
-          },
-        ],
+        company_id: companyIdNum,
+        prefix: alloc.prefix,
+        invoice_number: alloc.invoice_number,
       },
     });
 
-    if (existingQuotation && existingQuotation.prefix === req.body.prefix) {
+    if (existingQuotation) {
       return res.status(400).json({ message: 'Invoice number is already taken.' });
     }
 
@@ -102,21 +107,20 @@ const createSingleQuotation = async (req, res) => {
         data: newProductData
       });
       
-      // Create product_stock entry with 0 quantity
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
+      // Ensure at least one product_stock ledger row exists for this company/product
+      const existingRows = await prisma.product_stock.count({
+        where: { product_id: createdProduct.id, company_id: companyId },
+      });
+      if (existingRows === 0) {
+        await prisma.product_stock.create({
+          data: {
             product_id: createdProduct.id,
             company_id: companyId,
+            quantity: 0,
+            transactionDate: new Date(),
           },
-        },
-        update: {},
-        create: {
-          product_id: createdProduct.id,
-          company_id: companyId,
-          quantity: 0,
-        },
-      });
+        });
+      }
       
       productIdMap.set(productData.isbn, createdProduct.id);
     }
@@ -202,10 +206,10 @@ const createSingleQuotation = async (req, res) => {
           },
         },
         note: req.body.note,
-        invoice_number: Number(req.body.invoiceNumber),
+        invoice_number: alloc.invoice_number,
         invoice_order_date: req.body.orderDate,
         invoice_order_number: req.body.orderNumber,
-        prefix: req.body.prefix,
+        prefix: alloc.prefix,
         quotationInvoiceProduct: {
           create: processedProducts.map((product) => ({
             product: {
@@ -526,12 +530,16 @@ const updateSingleQuotation = async (req, res) => {
     if (!companyId) {
       return res.status(400).json({ error: "User company_id not found" });
     }
+    const companyIdNum = Number(companyId);
+    if (!Number.isFinite(companyIdNum)) {
+      return res.status(400).json({ error: "Invalid company_id" });
+    }
 
     // Check if the quotation exists and belongs to the user's company
     const existingQuotation = await prisma.quotationInvoice.findFirst({
       where: {
         id: Number(req.params.id),
-        company_id: companyId,
+        company_id: companyIdNum,
       },
     });
 
@@ -539,26 +547,7 @@ const updateSingleQuotation = async (req, res) => {
       return res.status(404).json({ message: 'Quotation not found.' });
     }
 
-    // Check if the invoice number is being updated to one that already exists
-    if (
-      existingQuotation.invoice_number !== Number(req.body.invoiceNumber) &&
-      (await prisma.quotationInvoice.findFirst({
-        where: {
-          company_id: companyId,
-          OR: [
-            {
-              prefix: req.body.prefix,
-              invoice_number: Number(req.body.invoiceNumber),
-            },
-            {
-              invoice_number: Number(req.body.invoiceNumber),
-            },
-          ],
-        },
-      }))
-    ) {
-      return res.status(400).json({ message: 'Invoice number is already taken.' });
-    }
+    // Numbering is managed by document_series; do not allow changing prefix/number here.
 
     // Calculate totals
     let totalSalePrice = 0;
@@ -652,21 +641,20 @@ const updateSingleQuotation = async (req, res) => {
         data: newProductData
       });
       
-      // Create product_stock entry
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
+      // Ensure at least one product_stock ledger row exists for this company/product
+      const existingRows = await prisma.product_stock.count({
+        where: { product_id: createdProduct.id, company_id: companyId },
+      });
+      if (existingRows === 0) {
+        await prisma.product_stock.create({
+          data: {
             product_id: createdProduct.id,
             company_id: companyId,
+            quantity: 0,
+            transactionDate: new Date(),
           },
-        },
-        update: {},
-        create: {
-          product_id: createdProduct.id,
-          company_id: companyId,
-          quantity: 0,
-        },
-      });
+        });
+      }
       
       updateProductIdMap.set(productData.isbn, createdProduct.id);
     }
@@ -722,10 +710,10 @@ const updateSingleQuotation = async (req, res) => {
           },
         },
         note: req.body.note,
-        invoice_number: Number(req.body.invoiceNumber),
+        invoice_number: existingQuotation.invoice_number,
         invoice_order_date: req.body.orderDate,
         invoice_order_number: req.body.orderNumber,
-        prefix: req.body.prefix,
+        prefix: existingQuotation.prefix,
         // Update the related products
         quotationInvoiceProduct: {
           deleteMany: {},

@@ -1,6 +1,7 @@
 const { getPagination } = require("../../../utils/query");
 const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
+const { allocateDocumentNumber } = require("../../../utils/documentSeries");
 
 const createSingleChallan = async (req, res) => {
   try {
@@ -9,24 +10,28 @@ const createSingleChallan = async (req, res) => {
     if (!companyId) {
       return res.status(400).json({ message: "User company not found" });
     }
+    const companyIdNum = Number(companyId);
+    if (!Number.isFinite(companyIdNum)) {
+      return res.status(400).json({ error: "Invalid company_id" });
+    }
+
+    const alloc = await allocateDocumentNumber({
+      company_id: companyIdNum,
+      document_type: "challan",
+      series_id: req.body.document_series_id,
+      requested_number: req.body.invoiceNumber,
+    });
 
     // Check if invoice number is already taken
     const existingChallan = await prisma.challanInvoice.findFirst({
       where: {
-        company_id: companyId,
-        OR: [
-          {
-            prefix: req.body.prefix,
-            invoice_number: Number(req.body.invoiceNumber),
-          },
-          {
-            invoice_number: Number(req.body.invoiceNumber),
-          },
-        ],
+        company_id: companyIdNum,
+        prefix: alloc.prefix,
+        invoice_number: alloc.invoice_number,
       },
     });
 
-    if (existingChallan && existingChallan.prefix === req.body.prefix) {
+    if (existingChallan) {
       return res.status(400).json({ message: 'Invoice number is already taken.' });
     }
 
@@ -102,21 +107,20 @@ const createSingleChallan = async (req, res) => {
         data: newProductData,
       });
       
-      // Create product_stock entry with 0 quantity
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
+      // Ensure at least one product_stock ledger row exists for this company/product
+      const existingRows = await prisma.product_stock.count({
+        where: { product_id: createdProduct.id, company_id: companyId },
+      });
+      if (existingRows === 0) {
+        await prisma.product_stock.create({
+          data: {
             product_id: createdProduct.id,
             company_id: companyId,
+            quantity: 0,
+            transactionDate: new Date(),
           },
-        },
-        update: {},
-        create: {
-          product_id: createdProduct.id,
-          company_id: companyId,
-          quantity: 0,
-        },
-      });
+        });
+      }
       
       productIdMap.set(productData.isbn, createdProduct.id);
     }
@@ -202,10 +206,10 @@ const createSingleChallan = async (req, res) => {
           },
         },
         note: req.body.note,
-        invoice_number: Number(req.body.invoiceNumber),
+        invoice_number: alloc.invoice_number,
         invoice_order_date: req.body.orderDate,
         invoice_order_number: req.body.orderNumber,
-        prefix: req.body.prefix,
+        prefix: alloc.prefix,
         challanInvoiceProduct: {
           create: processedProducts.map((product) => ({
             product: {
@@ -530,12 +534,16 @@ const updateSingleChallan = async (req, res) => {
     if (!companyId) {
       return res.status(400).json({ message: "User company not found" });
     }
+    const companyIdNum = Number(companyId);
+    if (!Number.isFinite(companyIdNum)) {
+      return res.status(400).json({ error: "Invalid company_id" });
+    }
 
     // Check if the challan exists and belongs to the user's company
     const existingChallan = await prisma.challanInvoice.findFirst({
       where: {
         id: Number(req.params.id),
-        company_id: companyId,
+        company_id: companyIdNum,
       },
     });
 
@@ -543,26 +551,7 @@ const updateSingleChallan = async (req, res) => {
       return res.status(404).json({ message: "Challan not found." });
     }
 
-    // Check if the invoice number is being updated to one that already exists
-    if (
-      existingChallan.invoice_number !== Number(req.body.invoiceNumber) &&
-      (await prisma.challanInvoice.findFirst({
-        where: {
-          company_id: companyId,
-          OR: [
-            {
-              prefix: req.body.prefix,
-              invoice_number: Number(req.body.invoiceNumber),
-            },
-            {
-              invoice_number: Number(req.body.invoiceNumber),
-            },
-          ],
-        },
-      }))
-    ) {
-      return res.status(400).json({ message: 'Invoice number is already taken.' });
-    }
+    // Numbering is managed by document_series; do not allow changing prefix/number here.
 
     // Calculate totals
     let totalSalePrice = 0;
@@ -656,21 +645,20 @@ const updateSingleChallan = async (req, res) => {
         data: newProductData
       });
       
-      // Create product_stock entry
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
+      // Ensure at least one product_stock ledger row exists for this company/product
+      const existingRows = await prisma.product_stock.count({
+        where: { product_id: createdProduct.id, company_id: companyId },
+      });
+      if (existingRows === 0) {
+        await prisma.product_stock.create({
+          data: {
             product_id: createdProduct.id,
             company_id: companyId,
+            quantity: 0,
+            transactionDate: new Date(),
           },
-        },
-        update: {},
-        create: {
-          product_id: createdProduct.id,
-          company_id: companyId,
-          quantity: 0,
-        },
-      });
+        });
+      }
       
       updateProductIdMap.set(productData.isbn, createdProduct.id);
     }
@@ -748,10 +736,10 @@ const updateSingleChallan = async (req, res) => {
           },
         },
         note: req.body.note,
-        invoice_number: Number(req.body.invoiceNumber),
+        invoice_number: existingChallan.invoice_number,
         invoice_order_date: req.body.orderDate,
         invoice_order_number: req.body.orderNumber,
-        prefix: req.body.prefix,
+        prefix: existingChallan.prefix,
         // Update the related products
         challanInvoiceProduct: {
           deleteMany: {},

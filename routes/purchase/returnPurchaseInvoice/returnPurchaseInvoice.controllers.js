@@ -223,23 +223,17 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
         },
       });
     }
-    // iterate through all products of this return purchase invoice and decrease product_stock
+    // iterate through all products of this return purchase invoice and decrease stock (ledger)
     for (const item of req.body.returnPurchaseInvoiceProduct) {
       const productId = Number(item.product_id);
       const quantity = Number(item.product_quantity);
       
-      // Update product_stock for this company
-      await prisma.product_stock.update({
-        where: {
-          product_id_company_id: {
-            product_id: productId,
-            company_id: companyId,
-          },
-        },
+      await prisma.product_stock.create({
         data: {
-          quantity: {
-            decrement: quantity,
-          },
+          product_id: productId,
+          company_id: companyId,
+          quantity: -quantity,
+          transactionDate: new Date(date),
         },
       });
     }
@@ -529,19 +523,14 @@ const deleteSingleReturnPurchaseInvoice = async (req, res) => {
     if (returnPurchaseInvoice.company_id !== companyId) {
       return res.status(403).json({ error: "Return purchase invoice does not belong to your company" });
     }
-    // product_stock quantity increase (reversing the return)
+    // Reverse the return by writing opposite ledger rows
     for (const item of returnPurchaseInvoice.returnPurchaseInvoiceProduct) {
-      await prisma.product_stock.update({
-        where: {
-          product_id_company_id: {
-            product_id: Number(item.product_id),
-            company_id: companyId,
-          },
-        },
+      await prisma.product_stock.create({
         data: {
-          quantity: {
-            increment: Number(item.product_quantity),
-          },
+          product_id: Number(item.product_id),
+          company_id: companyId,
+          quantity: Number(item.product_quantity),
+          transactionDate: new Date(),
         },
       });
     }

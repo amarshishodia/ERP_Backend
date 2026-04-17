@@ -2,6 +2,7 @@ const { getPagination } = require("../../../utils/query");
 const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
 const { createTransactionWithSubAccounts } = require("../../../utils/transactionHelper");
+const { allocateDocumentNumber } = require("../../../utils/documentSeries");
 const {
   sumSaleCashReceiptAmounts,
   netBilledSaleAmount,
@@ -15,25 +16,28 @@ const createSingleSaleInvoice = async (req, res) => {
       return res.status(400).json({ error: "User company_id not found" });
     }
     
-    // Check if invoice number is already taken
-    const existingInvoice = await prisma.saleInvoice.findFirst({
-      where: {
-        company_id: companyId,
-        OR: [
-          {
-            prefix: req.body.prefix,
-            invoice_number: Number(req.body.invoiceNumber),
-          },
-          {
-            invoice_number: Number(req.body.invoiceNumber),
-          },
-        ],
-      },
+    const companyIdNum = Number(companyId);
+    if (!Number.isFinite(companyIdNum)) {
+      return res.status(400).json({ error: "Invalid company_id" });
+    }
+    const alloc = await allocateDocumentNumber({
+      company_id: companyIdNum,
+      document_type: "sale_invoice",
+      series_id: req.body.document_series_id,
+      requested_number: req.body.invoiceNumber,
     });
 
-  if (existingInvoice && existingInvoice.prefix === req.body.prefix) {
-    return res.status(400).json({ message: 'Invoice number is already taken.' });
-  }
+    // Check if invoice number is already taken (safety)
+    const existingInvoice = await prisma.saleInvoice.findFirst({
+      where: {
+        company_id: companyIdNum,
+        prefix: alloc.prefix,
+        invoice_number: alloc.invoice_number,
+      },
+    });
+    if (existingInvoice) {
+      return res.status(400).json({ message: "Invoice number is already taken." });
+    }
 
     // Step 1: Handle new products (products with ISBN but no product_id)
     const productIdMap = new Map(); // Map ISBN to product_id
@@ -107,21 +111,20 @@ const createSingleSaleInvoice = async (req, res) => {
         data: newProductData
       });
       
-      // Create product_stock entry with 0 quantity (will be updated when sold)
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
+      // Ensure at least one product_stock ledger row exists for this company/product
+      const existingRows = await prisma.product_stock.count({
+        where: { product_id: createdProduct.id, company_id: companyId },
+      });
+      if (existingRows === 0) {
+        await prisma.product_stock.create({
+          data: {
             product_id: createdProduct.id,
             company_id: companyId,
+            quantity: 0,
+            transactionDate: new Date(),
           },
-        },
-        update: {},
-        create: {
-          product_id: createdProduct.id,
-          company_id: companyId,
-          quantity: 0,
-        },
-      });
+        });
+      }
       
       productIdMap.set(productData.isbn, createdProduct.id);
     }
@@ -259,9 +262,7 @@ const createSingleSaleInvoice = async (req, res) => {
           totalPurchasePrice,
         due_amount: dueAmount,
         ...(sales_order_id ? { sales_order: { connect: { id: sales_order_id } } } : {}),
-        company: {
-          connect: { id: companyId },
-        },
+        company: { connect: { id: companyIdNum } },
         customer: {
           connect: {
             id: Number(req.body.customer_id),
@@ -273,10 +274,10 @@ const createSingleSaleInvoice = async (req, res) => {
           },
         },
         note: req.body.note,
-        invoice_number: Number(req.body.invoiceNumber), // to save invoice Number
+        invoice_number: alloc.invoice_number, // auto from series
         invoice_order_date: orderDate ? new Date(orderDate) : null,
         invoice_order_number: orderNumber,
-        prefix: req.body.prefix,
+        prefix: alloc.prefix,
         // map and save all products from processed products array
         saleInvoiceProduct: {
           create: processedProducts.map((product) => ({
@@ -351,21 +352,14 @@ const createSingleSaleInvoice = async (req, res) => {
       const purchasePrice = product?.purchase_price || 0;
       const profit = (salePrice * conversion - purchasePrice) * quantity * (1 - discount / 100);
       
-      // Update product_stock for this company (upsert: create if missing, e.g. product never purchased)
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
-            product_id: productId,
-            company_id: companyId,
-          },
-        },
-        update: {
-          quantity: { decrement: quantity },
-        },
-        create: {
+      // Record stock movement as a ledger row in product_stock (sale = negative quantity)
+      await prisma.product_stock.create({
+        data: {
           product_id: productId,
           company_id: companyId,
           quantity: -quantity,
+          transactionDate: new Date(date),
+          list_price: Number.isFinite(salePrice) ? salePrice : null,
         },
       });
       
@@ -1128,12 +1122,16 @@ const updateSingleSaleInvoice = async (req, res) => {
     if (!companyId) {
       return res.status(400).json({ error: "User company_id not found" });
     }
+    const companyIdNum = Number(companyId);
+    if (!Number.isFinite(companyIdNum)) {
+      return res.status(400).json({ error: "Invalid company_id" });
+    }
 
     // Check if the sale invoice exists and belongs to the user's company
     const existingInvoice = await prisma.saleInvoice.findFirst({
       where: {
         id: Number(req.params.id),
-        company_id: companyId,
+        company_id: companyIdNum,
       },
     });
 
@@ -1141,26 +1139,7 @@ const updateSingleSaleInvoice = async (req, res) => {
       return res.status(404).json({ message: 'Sale invoice not found.' });
     }
 
-    // Check if the invoice number is being updated to one that already exists
-    if (
-      existingInvoice.invoice_number !== Number(req.body.invoiceNumber) &&
-      (await prisma.saleInvoice.findFirst({
-        where: {
-          company_id: companyId,
-          OR: [
-            {
-              prefix: req.body.prefix,
-              invoice_number: Number(req.body.invoiceNumber),
-            },
-            {
-              invoice_number: Number(req.body.invoiceNumber),
-            },
-          ],
-        },
-      }))
-    ) {
-      return res.status(400).json({ message: 'Invoice number is already taken.' });
-    }
+    // Invoice numbering is managed by document_series; do not allow changing prefix/number here.
 
     // Verify that all products exist (product model has no company_id; company scope is via product_stock / invoice)
     const productIds = req.body.saleInvoiceProduct.map(p => Number(p.product_id));
@@ -1257,10 +1236,10 @@ const updateSingleSaleInvoice = async (req, res) => {
           },
         },
         note: req.body.note,
-        invoice_number: Number(req.body.invoiceNumber),
+        invoice_number: existingInvoice.invoice_number,
         invoice_order_date: req.body.orderDate,
         invoice_order_number: req.body.orderNumber,
-        prefix: req.body.prefix,
+        prefix: existingInvoice.prefix,
         // Update the related products in the sale invoice
         saleInvoiceProduct: {
           deleteMany: {}, // Delete existing products before creating new ones
@@ -1294,7 +1273,7 @@ const updateSingleSaleInvoice = async (req, res) => {
           type: 'sale',
           related_id: updatedInvoice.id,
           company: {
-            connect: { id: companyId },
+            connect: { id: companyIdNum },
           },
         },
       });
@@ -1311,7 +1290,7 @@ const updateSingleSaleInvoice = async (req, res) => {
           type: 'sale',
           related_id: updatedInvoice.id,
           company: {
-            connect: { id: companyId },
+            connect: { id: companyIdNum },
           },
         },
       });

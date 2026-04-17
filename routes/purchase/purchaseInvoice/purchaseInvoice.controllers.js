@@ -2,6 +2,7 @@ const { getPagination } = require("../../../utils/query");
 const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
 const { createTransactionWithSubAccounts } = require("../../../utils/transactionHelper");
+const { allocateDocumentNumber } = require("../../../utils/documentSeries");
 
 const createSinglePurchaseInvoice = async (req, res) => {
   // Get company_id from logged-in user
@@ -87,20 +88,12 @@ const createSinglePurchaseInvoice = async (req, res) => {
 
   try {
     const companyIdNum = parseInt(companyId, 10);
-    // Get company's purchase invoice prefix from settings
-    const appSetting = await prisma.appSetting.findUnique({
-      where: { id: companyIdNum },
-      select: { purchase_invoice_prefix: true },
+    const alloc = await allocateDocumentNumber({
+      company_id: companyIdNum,
+      document_type: "purchase_invoice",
+      series_id: req.body.document_series_id,
+      requested_number: req.body.invoiceNumber,
     });
-    const purchasePrefix = (appSetting?.purchase_invoice_prefix || "PINV/25-26/").trim() || "PINV/25-26/";
-
-    // Next invoice number: max invoice_number for this company with this prefix + 1
-    const lastInvoice = await prisma.purchaseInvoice.findFirst({
-      where: { company_id: companyIdNum, prefix: purchasePrefix },
-      orderBy: { invoice_number: "desc" },
-      select: { invoice_number: true },
-    });
-    const nextInvoiceNumber = (lastInvoice?.invoice_number != null ? lastInvoice.invoice_number + 1 : 1);
 
     // convert all incoming data to a specific format.
     const date = new Date(req.body.date).toISOString().split("T")[0];
@@ -108,8 +101,8 @@ const createSinglePurchaseInvoice = async (req, res) => {
     const createdInvoice = await prisma.purchaseInvoice.create({
       data: {
         date: new Date(date),
-        prefix: purchasePrefix,
-        invoice_number: nextInvoiceNumber,
+        prefix: alloc.prefix,
+        invoice_number: alloc.invoice_number,
         total_amount: finalTotal,
         discount: billDiscount,
         paid_amount: paidAmount,
@@ -199,23 +192,14 @@ const createSinglePurchaseInvoice = async (req, res) => {
         },
       });
 
-      // Update product_stock for this company
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
-            product_id: productId,
-            company_id: companyId,
-          },
-        },
-        update: {
-          quantity: {
-            increment: quantity,
-          },
-        },
-        create: {
+      // Record stock movement as a ledger row in product_stock (purchase = positive quantity)
+      await prisma.product_stock.create({
+        data: {
           product_id: productId,
           company_id: companyId,
           quantity: quantity,
+          transactionDate: new Date(date),
+          list_price: null,
         },
       });
 

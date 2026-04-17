@@ -302,23 +302,17 @@ const createSingleReturnSaleInvoice = async (req, res) => {
         },
       },
     });
-    // iterate through all products of this return sale invoice and increase product_stock
+    // iterate through all products of this return sale invoice and increase stock (ledger)
     for (const item of req.body.returnSaleInvoiceProduct) {
       const productId = Number(item.product_id);
       const quantity = Number(item.product_quantity);
       
-      // Update product_stock for this company
-      await prisma.product_stock.update({
-        where: {
-          product_id_company_id: {
-            product_id: productId,
-            company_id: companyId,
-          },
-        },
+      await prisma.product_stock.create({
         data: {
-          quantity: {
-            increment: quantity,
-          },
+          product_id: productId,
+          company_id: companyId,
+          quantity: quantity,
+          transactionDate: new Date(date),
         },
       });
     }
@@ -623,19 +617,14 @@ const deleteSingleReturnSaleInvoice = async (req, res) => {
     if (!returnSaleInvoice) {
       return res.status(404).json({ error: "Return sale invoice not found" });
     }
-    // product_stock quantity decrease (reversing the return)
+    // Reverse the return by writing opposite ledger rows
     for (const item of returnSaleInvoice.returnSaleInvoiceProduct) {
-      await prisma.product_stock.update({
-        where: {
-          product_id_company_id: {
-            product_id: Number(item.product_id),
-            company_id: companyId,
-          },
-        },
+      await prisma.product_stock.create({
         data: {
-          quantity: {
-            decrement: Number(item.product_quantity),
-          },
+          product_id: Number(item.product_id),
+          company_id: companyId,
+          quantity: -Number(item.product_quantity),
+          transactionDate: new Date(),
         },
       });
     }

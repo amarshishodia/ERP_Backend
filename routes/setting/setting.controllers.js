@@ -13,6 +13,11 @@ const updateSetting = async (req, res) => {
     }
 
     const data = { ...req.body };
+    // Prefixes are now managed via document_series; ignore any old prefix fields.
+    delete data.sale_invoice_prefix;
+    delete data.quotation_prefix;
+    delete data.challan_prefix;
+    delete data.purchase_invoice_prefix;
     if (req.file && req.file.filename) {
       data.logo = req.file.filename;
     }

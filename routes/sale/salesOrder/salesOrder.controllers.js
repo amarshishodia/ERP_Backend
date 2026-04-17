@@ -87,21 +87,20 @@ const createSalesOrder = async (req, res) => {
         data: newProductData
       });
       
-      // Create product_stock entry with 0 quantity
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
+      // Ensure at least one product_stock ledger row exists for this company/product
+      const existingRows = await prisma.product_stock.count({
+        where: { product_id: createdProduct.id, company_id: companyId },
+      });
+      if (existingRows === 0) {
+        await prisma.product_stock.create({
+          data: {
             product_id: createdProduct.id,
             company_id: companyId,
+            quantity: 0,
+            transactionDate: new Date(),
           },
-        },
-        update: {},
-        create: {
-          product_id: createdProduct.id,
-          company_id: companyId,
-          quantity: 0,
-        },
-      });
+        });
+      }
       
       productIdMap.set(item.isbn, createdProduct.id);
     }
@@ -467,20 +466,19 @@ const updateSalesOrder = async (req, res) => {
           data: newProductData
         });
         
-        await prisma.product_stock.upsert({
-          where: {
-            product_id_company_id: {
+        const existingRows2 = await prisma.product_stock.count({
+          where: { product_id: createdProduct.id, company_id: companyId },
+        });
+        if (existingRows2 === 0) {
+          await prisma.product_stock.create({
+            data: {
               product_id: createdProduct.id,
               company_id: companyId,
+              quantity: 0,
+              transactionDate: new Date(),
             },
-          },
-          update: {},
-          create: {
-            product_id: createdProduct.id,
-            company_id: companyId,
-            quantity: 0,
-          },
-        });
+          });
+        }
         
         productIdMap.set(item.isbn, createdProduct.id);
       }

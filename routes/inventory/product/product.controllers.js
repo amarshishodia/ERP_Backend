@@ -9,13 +9,13 @@ const PORT = process.env.PORT || 5001;
 const HOST = process.env.HOST || "http://localhost";
 
 /**
- * Group stock ledger rows by location with total qty and weighted avg purchase price.
- * sale_price / list_price are product-level; passed through for UI.
+ * Group product_stock ledger rows by location with total qty.
+ * list_price is per-row; we also pass product sale_price for UI.
  */
-const aggregateStocksByLocation = (stockEntries, salePrice, listPrice) => {
-  if (!Array.isArray(stockEntries) || stockEntries.length === 0) return [];
+const aggregateStocksByLocation = (productStockRows, salePrice) => {
+  if (!Array.isArray(productStockRows) || productStockRows.length === 0) return [];
   const byLoc = new Map();
-  for (const e of stockEntries) {
+  for (const e of productStockRows) {
     const locId = e.location_id != null ? e.location_id : e.location?.id ?? null;
     const key = locId != null ? String(locId) : "_no_location";
     if (!byLoc.has(key)) {
@@ -23,29 +23,27 @@ const aggregateStocksByLocation = (stockEntries, salePrice, listPrice) => {
         location_id: locId,
         location_name: e.location?.name ?? (locId == null ? "—" : "—"),
         quantity: 0,
-        costNumerator: 0,
+        last_list_price: null,
       });
     }
     const row = byLoc.get(key);
     if (e.location?.name) row.location_name = e.location.name;
     const q = Number(e.quantity) || 0;
-    const p = Number(e.purchase_price) || 0;
     row.quantity += q;
-    row.costNumerator += q * p;
+    if (e.list_price != null) row.last_list_price = Number(e.list_price);
   }
   return Array.from(byLoc.values()).map((row) => ({
     location_id: row.location_id,
     location_name: row.location_name,
     quantity: row.quantity,
-    avg_purchase_price: row.quantity > 0 ? row.costNumerator / row.quantity : 0,
     sale_price: salePrice != null ? Number(salePrice) : null,
-    list_price: listPrice != null ? Number(listPrice) : null,
+    list_price: row.last_list_price,
   }));
 };
 
-/** Product IDs that have at least one row in `stock` for this company (any net qty, including negative). */
+/** Product IDs that have at least one row in `product_stock` for this company. */
 const getProductIdsWithLedgerStockRows = async (companyIdNum) => {
-  const byProduct = await prisma.stock.groupBy({
+  const byProduct = await prisma.product_stock.groupBy({
     by: ["product_id"],
     where: { company_id: companyIdNum },
     _sum: { quantity: true },
@@ -228,7 +226,7 @@ const createSingleProduct = async (req, res) => {
         }
       }
 
-      // For each product (new or existing): add stock to stock table and upsert product_stock
+      // For each product (new or existing): add opening stock rows into product_stock
       for (const item of resolvedBody) {
         const product = await prisma.product.findUnique({
           where: { isbn: String(item.isbn).trim() },
@@ -236,56 +234,18 @@ const createSingleProduct = async (req, res) => {
         if (!product) continue;
         const location = await getLocationForRow(item);
         const qty = parseInt(item.quantity, 10) || 0;
-        const purchasePrice = parseFloat(item.purchase_price) || 0;
         const listPrice = parseFloat(item.sale_price) || parseFloat(item.list_price) || 0;
         const reorderQty = item.reorder_quantity != null && item.reorder_quantity !== "" ? parseInt(item.reorder_quantity, 10) : null;
 
         if (qty > 0) {
-          // Create stock table entry (per-location warehouse tracking)
-          await prisma.stock.create({
-            data: {
-              product_id: product.id,
-              company_id: companyIdNum,
-              location_id: location.id,
-              transaction_date: new Date(),
-              purchase_price: purchasePrice,
-              quantity: qty,
-            },
-          });
-        }
-
-        // Upsert product_stock: add quantity for existing, create for new
-        const existingStock = await prisma.product_stock.findUnique({
-          where: {
-            product_id_company_id: {
-              product_id: product.id,
-              company_id: companyIdNum,
-            },
-          },
-        });
-        if (existingStock) {
-          await prisma.product_stock.update({
-            where: {
-              product_id_company_id: {
-                product_id: product.id,
-                company_id: companyIdNum,
-              },
-            },
-            data: {
-              quantity: existingStock.quantity + qty,
-              list_price: listPrice > 0 ? listPrice : existingStock.list_price,
-              reorder_quantity: reorderQty ?? existingStock.reorder_quantity,
-              location_id: location.id,
-            },
-          });
-        } else {
           await prisma.product_stock.create({
             data: {
               product_id: product.id,
               company_id: companyIdNum,
               quantity: qty,
-              list_price: listPrice > 0 ? listPrice : null,
+              transactionDate: new Date(),
               reorder_quantity: reorderQty,
+              list_price: listPrice > 0 ? listPrice : null,
               location_id: location.id,
             },
           });
@@ -431,49 +391,38 @@ const createSingleProduct = async (req, res) => {
       const firstLocationId = validStockEntries.length > 0 ? Number(validStockEntries[0].locationId) : null;
       const salePrice = parseFloat(req.body.sale_price) || 0;
 
-      // Create product_stock entry for this company (quantity from stock entries or form)
-      const purchasePrice = req.body.purchase_price && !isNaN(parseFloat(req.body.purchase_price)) ? parseFloat(req.body.purchase_price) : 0;
       const reorderQty = req.body.reorder_quantity && !isNaN(parseInt(req.body.reorder_quantity)) ? parseInt(req.body.reorder_quantity) : null;
-      const productStockQty = validStockEntries.length > 0 ? totalStockQty : quantity;
+      // Create product_stock ledger rows (multiple per product) if provided.
+      // If none provided, create a single row from the form quantity (if > 0).
+      const stockLedgerRows =
+        validStockEntries.length > 0
+          ? validStockEntries.map((e) => ({
+              product_id: createdProduct.id,
+              company_id: companyId,
+              location_id: Number(e.locationId),
+              transactionDate: e.transactionDate ? new Date(e.transactionDate) : new Date(),
+              quantity: parseInt(e.quantity, 10) || 0,
+              reorder_quantity: reorderQty,
+              list_price: salePrice > 0 ? salePrice : null,
+            }))
+          : (quantity > 0
+              ? [{
+                  product_id: createdProduct.id,
+                  company_id: companyId,
+                  location_id: firstLocationId,
+                  transactionDate: new Date(),
+                  quantity,
+                  reorder_quantity: reorderQty,
+                  list_price: salePrice > 0 ? salePrice : null,
+                }]
+              : []);
 
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
-            product_id: createdProduct.id,
-            company_id: companyId,
-          },
-        },
-        update: {
-          quantity: productStockQty,
-          reorder_quantity: reorderQty,
-          list_price: salePrice > 0 ? salePrice : undefined,
-          location_id: firstLocationId,
-        },
-        create: {
-          product_id: createdProduct.id,
-          company_id: companyId,
-          quantity: productStockQty,
-          reorder_quantity: reorderQty,
-          list_price: salePrice > 0 ? salePrice : null,
-          location_id: firstLocationId,
-        },
-      });
-
-      // Create stock entries (multiple per product) if provided
-      if (validStockEntries.length > 0) {
-        const stockData = validStockEntries.map((e) => ({
-          product_id: createdProduct.id,
-          company_id: companyId,
-          location_id: Number(e.locationId),
-          transaction_date: e.transactionDate ? new Date(e.transactionDate) : new Date(),
-          purchase_price: parseFloat(e.purchasePrice) || 0,
-          quantity: parseInt(e.quantity, 10) || 0,
-          status: e.status !== false,
-        }));
-        await prisma.stock.createMany({ data: stockData });
+      if (stockLedgerRows.length > 0) {
+        await prisma.product_stock.createMany({ data: stockLedgerRows });
       }
 
       // stock product's account transaction create (only if quantity > 0 and value > 0)
+      const purchasePrice = req.body.purchase_price && !isNaN(parseFloat(req.body.purchase_price)) ? parseFloat(req.body.purchase_price) : 0;
       const transactionAmount = validStockEntries.length > 0 ? totalStockValue : purchasePrice * quantity;
       if (transactionAmount > 0) {
         await createTransactionWithSubAccounts({
@@ -503,6 +452,10 @@ const getAllProduct = async (req, res) => {
   if (!companyId) {
     return res.status(400).json({ error: "User company_id not found" });
   }
+  const companyIdNum = Number(companyId);
+  if (!Number.isFinite(companyIdNum)) {
+    return res.status(400).json({ error: "Invalid company_id" });
+  }
 
   if (req.query.query === "all") {
     try {
@@ -513,11 +466,11 @@ const getAllProduct = async (req, res) => {
 
       const whereCondition = { status };
 
-      // Product list "My Stock": products with any `stock` ledger row for this company (net may be negative)
+      // Product list "My Stock": products with any `product_stock` ledger row for this company
       const onlyLedgerStock =
         req.query.only_ledger_stock === "true" || req.query.only_ledger_stock === "1";
       if (onlyLedgerStock) {
-        const inStockProductIds = await getProductIdsWithLedgerStockRows(companyId);
+        const inStockProductIds = await getProductIdsWithLedgerStockRows(companyIdNum);
         if (inStockProductIds.length === 0) {
           return res.json({ data: [] });
         }
@@ -545,22 +498,19 @@ const getAllProduct = async (req, res) => {
         },
         book_publisher: { select: { name: true } },
         product_stock: {
-          where: { company_id: companyId },
-          select: { quantity: true, reorder_quantity: true, list_price: true },
-        },
-      };
-      if (viewMode === "stock" || onlyLedgerStock) {
-        includeBase.stock_entries = {
-          where: { company_id: companyId },
+          where: { company_id: companyIdNum },
           select: {
+            id: true,
             quantity: true,
-            purchase_price: true,
+            reorder_quantity: true,
+            list_price: true,
+            transactionDate: true,
             location_id: true,
             location: { select: { id: true, name: true } },
           },
-          orderBy: { id: "asc" },
-        };
-      }
+          orderBy: [{ transactionDate: "asc" }, { id: "asc" }],
+        },
+      };
 
       const allProduct = await prisma.product.findMany({
         where: whereCondition,
@@ -569,23 +519,18 @@ const getAllProduct = async (req, res) => {
       });
 
       let productsWithImages = allProduct.map((product) => {
-        const stock = product.product_stock && product.product_stock.length > 0 ? product.product_stock[0] : null;
         const categories = product.product_categories?.map((pc) => pc.product_category) || [];
-        const entries = product.stock_entries || [];
-        const stocksByLocation = aggregateStocksByLocation(
-          entries,
-          product.sale_price,
-          stock?.list_price ?? null
-        );
-        const totalFromEntries = stocksByLocation.reduce((s, r) => s + r.quantity, 0);
-        const quantity =
-          stocksByLocation.length > 0 ? totalFromEntries : stock ? stock.quantity : 0;
-        const { stock_entries, ...rest } = product;
+        const psRows = product.product_stock || [];
+        const stocksByLocation = aggregateStocksByLocation(psRows, product.sale_price);
+        const quantity = psRows.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+        const reorder_quantity =
+          psRows.length > 0 ? (psRows.find((r) => r.reorder_quantity != null)?.reorder_quantity ?? null) : null;
+        const { ...rest } = product;
         return {
           ...rest,
           categories,
           quantity,
-          reorder_quantity: stock ? stock.reorder_quantity : null,
+          reorder_quantity,
           stocks_by_location:
             viewMode === "stock" || onlyLedgerStock ? stocksByLocation : undefined,
           imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null,
@@ -639,7 +584,7 @@ const getAllProduct = async (req, res) => {
 
       let whereForSearch = searchConditions;
       if (searchOnlyLedger) {
-        const ledgerIds = await getProductIdsWithLedgerStockRows(companyId);
+        const ledgerIds = await getProductIdsWithLedgerStockRows(companyIdNum);
         if (ledgerIds.length === 0) {
           const emptyResp = {
             data: [],
@@ -672,22 +617,19 @@ const getAllProduct = async (req, res) => {
         },
         book_publisher: { select: { name: true } },
         product_stock: {
-          where: { company_id: companyId },
-          select: { quantity: true, reorder_quantity: true, list_price: true },
-        },
-      };
-      if (searchOnlyLedger) {
-        searchInclude.stock_entries = {
-          where: { company_id: companyId },
+          where: { company_id: companyIdNum },
           select: {
+            id: true,
             quantity: true,
-            purchase_price: true,
+            reorder_quantity: true,
+            list_price: true,
+            transactionDate: true,
             location_id: true,
             location: { select: { id: true, name: true } },
           },
-          orderBy: { id: "asc" },
-        };
-      }
+          orderBy: [{ transactionDate: "asc" }, { id: "asc" }],
+        },
+      };
 
       const allProduct = await prisma.product.findMany({
         where: whereForSearch,
@@ -748,25 +690,18 @@ const getAllProduct = async (req, res) => {
 
       // Optimize image URL generation and add quantity from stock / ledger
       let productsWithImages = allProduct.map((product) => {
-        const stock = product.product_stock && product.product_stock.length > 0 ? product.product_stock[0] : null;
         const categories = product.product_categories?.map((pc) => pc.product_category) || [];
-        const entries = product.stock_entries || [];
-        const stocksByLocation = searchOnlyLedger
-          ? aggregateStocksByLocation(entries, product.sale_price, stock?.list_price ?? null)
-          : [];
-        const totalFromEntries = stocksByLocation.reduce((s, r) => s + r.quantity, 0);
-        const quantity =
-          searchOnlyLedger && stocksByLocation.length > 0
-            ? totalFromEntries
-            : stock
-              ? stock.quantity
-              : 0;
-        const { stock_entries, ...rest } = product;
+        const psRows = product.product_stock || [];
+        const stocksByLocation = searchOnlyLedger ? aggregateStocksByLocation(psRows, product.sale_price) : [];
+        const quantity = psRows.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+        const reorder_quantity =
+          psRows.length > 0 ? (psRows.find((r) => r.reorder_quantity != null)?.reorder_quantity ?? null) : null;
+        const { ...rest } = product;
         const row = {
           ...rest,
           categories,
           quantity,
-          reorder_quantity: stock ? stock.reorder_quantity : null,
+          reorder_quantity,
           imageUrl: product.imageName ? `${HOST}:${PORT}/v1/product-image/${product.imageName}` : null,
         };
         if (searchOnlyLedger) {
@@ -963,19 +898,15 @@ const getSingleProduct = async (req, res) => {
         product_stock: {
           where: { company_id: companyId },
           select: {
+            id: true,
             quantity: true,
             reorder_quantity: true,
             list_price: true,
+            transactionDate: true,
+            location_id: true,
+            location: { select: { id: true, name: true } },
           },
-        },
-        stock_entries: {
-          where: { company_id: companyId },
-          include: {
-            location: {
-              select: { id: true, name: true },
-            },
-          },
-          orderBy: { id: 'asc' },
+          orderBy: { transactionDate: "asc" },
         },
       },
     });
@@ -984,29 +915,13 @@ const getSingleProduct = async (req, res) => {
       return res.status(404).json({ error: "Product not found", id: productId });
     }
 
-    // Check if product has stock for this company (optional check)
-    if (singleProduct.product_stock.length === 0) {
-      // Product exists but no stock entry - create one with 0 quantity
-      await prisma.product_stock.create({
-        data: {
-          product_id: singleProduct.id,
-          company_id: companyId,
-          quantity: 0,
-        },
-      });
-      singleProduct.product_stock = [{ quantity: 0, reorder_quantity: null }];
-    }
-    
-    // Add quantity from stock
-    singleProduct.quantity = singleProduct.product_stock[0].quantity;
-    singleProduct.reorder_quantity = singleProduct.product_stock[0].reorder_quantity;
+    // Add quantity from product_stock ledger
+    const psRows = singleProduct.product_stock || [];
+    singleProduct.quantity = psRows.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+    singleProduct.reorder_quantity =
+      psRows.length > 0 ? (psRows.find((r) => r.reorder_quantity != null)?.reorder_quantity ?? null) : null;
 
-    const listPrice = singleProduct.product_stock[0]?.list_price ?? null;
-    singleProduct.stocks_by_location = aggregateStocksByLocation(
-      singleProduct.stock_entries || [],
-      singleProduct.sale_price,
-      listPrice
-    );
+    singleProduct.stocks_by_location = aggregateStocksByLocation(psRows, singleProduct.sale_price);
     
     // Add categories array
     singleProduct.categories = singleProduct.product_categories?.map(pc => pc.product_category) || [];
@@ -1135,7 +1050,7 @@ const updateSingleProduct = async (req, res) => {
       },
     });
     
-    // Replace stock entries only when explicitly provided (stock_entries in request)
+    // Replace product_stock ledger entries only when explicitly provided (stock_entries in request)
     let stockEntries = [];
     const hasStockEntriesInRequest = req.body.stock_entries !== undefined && req.body.stock_entries !== null;
     if (hasStockEntriesInRequest) {
@@ -1163,65 +1078,42 @@ const updateSingleProduct = async (req, res) => {
       const totalStockQty = validStockEntries.reduce((sum, e) => sum + (parseInt(e.quantity, 10) || 0), 0);
       const firstLocationId = validStockEntries.length > 0 ? Number(validStockEntries[0].locationId) : null;
 
-      await prisma.stock.deleteMany({
+      // Replace all ledger rows for this product/company
+      await prisma.product_stock.deleteMany({
         where: { product_id: productId, company_id: companyId },
       });
+
       if (validStockEntries.length > 0) {
         const stockData = validStockEntries.map((e) => ({
           product_id: productId,
           company_id: companyId,
           location_id: Number(e.locationId),
-          transaction_date: e.transactionDate ? new Date(e.transactionDate) : new Date(),
-          purchase_price: parseFloat(e.purchasePrice) || 0,
+          transactionDate: e.transactionDate ? new Date(e.transactionDate) : new Date(),
           quantity: parseInt(e.quantity, 10) || 0,
-          status: e.status !== false,
+          reorder_quantity: reorderQuantity,
+          list_price: salePrice > 0 ? salePrice : null,
         }));
-        await prisma.stock.createMany({ data: stockData });
+        await prisma.product_stock.createMany({ data: stockData });
+      } else if (quantity > 0) {
+        await prisma.product_stock.create({
+          data: {
+            product_id: productId,
+            company_id: companyId,
+            location_id: firstLocationId,
+            transactionDate: new Date(),
+            quantity,
+            reorder_quantity: reorderQuantity,
+            list_price: salePrice > 0 ? salePrice : null,
+          },
+        });
       }
-
-      // Update product_stock from stock entries
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
-            product_id: updatedProduct.id,
-            company_id: companyId,
-          },
-        },
-        update: {
-          quantity: totalStockQty,
-          reorder_quantity: reorderQuantity,
-          list_price: salePrice > 0 ? salePrice : undefined,
-          location_id: firstLocationId,
-        },
-        create: {
-          product_id: updatedProduct.id,
-          company_id: companyId,
-          quantity: totalStockQty,
-          reorder_quantity: reorderQuantity,
-          list_price: salePrice > 0 ? salePrice : null,
-          location_id: firstLocationId,
-        },
-      });
     } else {
-      // Stock entries not in request - only update product_stock quantity/reorder from form (e.g. quick edit)
-      await prisma.product_stock.upsert({
-        where: {
-          product_id_company_id: {
-            product_id: updatedProduct.id,
-            company_id: companyId,
-          },
-        },
-        update: {
-          quantity: quantity,
+      // Stock entries not in request - keep ledger rows, but update reorder/list_price on existing rows
+      await prisma.product_stock.updateMany({
+        where: { product_id: updatedProduct.id, company_id: companyId },
+        data: {
           reorder_quantity: reorderQuantity,
           list_price: salePrice > 0 ? salePrice : undefined,
-        },
-        create: {
-          product_id: updatedProduct.id,
-          company_id: companyId,
-          quantity: quantity,
-          reorder_quantity: reorderQuantity,
-          list_price: salePrice > 0 ? salePrice : null,
         },
       });
     }
@@ -1231,17 +1123,14 @@ const updateSingleProduct = async (req, res) => {
       updatedProduct.imageUrl = `${HOST}:${PORT}/v1/product-image/${updatedProduct.imageName}`;
     }
     
-    // Add quantity from stock
-    const stock = await prisma.product_stock.findUnique({
-      where: {
-        product_id_company_id: {
-          product_id: updatedProduct.id,
-          company_id: companyId,
-        },
-      },
+    // Add quantity from product_stock ledger
+    const rows = await prisma.product_stock.findMany({
+      where: { product_id: updatedProduct.id, company_id: companyId },
+      select: { quantity: true, reorder_quantity: true },
     });
-    updatedProduct.quantity = stock ? stock.quantity : 0;
-    updatedProduct.reorder_quantity = stock ? stock.reorder_quantity : null;
+    updatedProduct.quantity = rows.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+    updatedProduct.reorder_quantity =
+      rows.length > 0 ? (rows.find((r) => r.reorder_quantity != null)?.reorder_quantity ?? null) : null;
     
     // Add categories array
     updatedProduct.categories = updatedProduct.product_categories?.map(pc => pc.product_category) || [];
@@ -1324,10 +1213,10 @@ const getProductHistory = async (req, res) => {
         },
         orderBy: { sale_date: "desc" },
       }),
-      prisma.stock.findMany({
+      prisma.product_stock.findMany({
         where: { product_id: productId, company_id: companyId },
         include: { location: { select: { name: true } } },
-        orderBy: { transaction_date: "desc" },
+        orderBy: { transactionDate: "desc" },
       }),
     ]);
 
@@ -1359,11 +1248,11 @@ const getProductHistory = async (req, res) => {
 
     const formatOpeningStock = (row) => ({
       type: "Opening Stock",
-      date: row.transaction_date,
+      date: row.transactionDate,
       party: row.location?.name ?? "—",
       quantity: row.quantity,
-      unitPrice: row.purchase_price ?? 0,
-      total: (row.quantity || 0) * (row.purchase_price || 0),
+      unitPrice: row.list_price ?? 0,
+      total: (row.quantity || 0) * (row.list_price || 0),
       discount: 0,
       invoiceId: null,
       invoiceRef: "—",
@@ -1408,26 +1297,18 @@ const patchProductListPriceSync = async (req, res) => {
       data: { sale_price: listPrice },
     });
 
-    const ps = await prisma.product_stock.findUnique({
-      where: {
-        product_id_company_id: {
-          product_id: productId,
-          company_id: companyId,
-        },
-      },
+    // Update list_price on all existing ledger rows; if none exist, create a zero-qty row.
+    const updated = await prisma.product_stock.updateMany({
+      where: { product_id: productId, company_id: companyId },
+      data: { list_price: listPrice },
     });
-
-    if (ps) {
-      await prisma.product_stock.update({
-        where: { id: ps.id },
-        data: { list_price: listPrice },
-      });
-    } else {
+    if (!updated || updated.count === 0) {
       await prisma.product_stock.create({
         data: {
           product_id: productId,
           company_id: companyId,
           quantity: 0,
+          transactionDate: new Date(),
           list_price: listPrice,
         },
       });
