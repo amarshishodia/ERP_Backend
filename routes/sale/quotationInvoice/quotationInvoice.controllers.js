@@ -3,6 +3,13 @@ const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
 const { allocateDocumentNumber } = require("../../../utils/documentSeries");
 
+const productWithPublisherInclude = {
+  include: {
+    book_publisher: true,
+    product_currency: true,
+  },
+};
+
 const createSingleQuotation = async (req, res) => {
   try {
     // Get company_id from logged-in user
@@ -264,7 +271,7 @@ const getAllQuotation = async (req, res) => {
         user: true,
         quotationInvoiceProduct: {
           include: {
-            product: true,
+            product: productWithPublisherInclude,
           },
         },
       },
@@ -301,7 +308,7 @@ const getSingleQuotation = async (req, res) => {
         user: true,
         quotationInvoiceProduct: {
           include: {
-            product: true,
+            product: productWithPublisherInclude,
           },
         },
       },
@@ -339,7 +346,7 @@ const convertQuotationToSale = async (req, res) => {
         user: true,
         quotationInvoiceProduct: {
           include: {
-            product: true,
+            product: productWithPublisherInclude,
           },
         },
       },
@@ -736,7 +743,7 @@ const updateSingleQuotation = async (req, res) => {
         user: true,
         quotationInvoiceProduct: {
           include: {
-            product: true,
+            product: productWithPublisherInclude,
           },
         },
       },

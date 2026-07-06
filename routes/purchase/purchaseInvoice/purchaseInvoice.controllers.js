@@ -1,10 +1,16 @@
-const { getPagination } = require("../../../utils/query");
+const { getPagination, getDateRangeFilter } = require("../../../utils/query");
 const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
 const { createTransactionWithSubAccounts } = require("../../../utils/transactionHelper");
 const { allocateDocumentNumber } = require("../../../utils/documentSeries");
+const { adjustProductStock } = require("../../../utils/productStock");
 
 const createSinglePurchaseInvoice = async (req, res) => {
+  if (req.body?.action === "delete" && req.body?.id != null) {
+    req.params = { id: String(req.body.id) };
+    return deleteSinglePurchaseInvoice(req, res);
+  }
+
   // Get company_id from logged-in user
   const companyId = await getCompanyId(req.auth.sub);
   if (!companyId) {
@@ -91,8 +97,6 @@ const createSinglePurchaseInvoice = async (req, res) => {
     const alloc = await allocateDocumentNumber({
       company_id: companyIdNum,
       document_type: "purchase_invoice",
-      series_id: req.body.document_series_id,
-      requested_number: req.body.invoiceNumber,
     });
 
     // convert all incoming data to a specific format.
@@ -192,15 +196,12 @@ const createSinglePurchaseInvoice = async (req, res) => {
         },
       });
 
-      // Record stock movement as a ledger row in product_stock (purchase = positive quantity)
-      await prisma.product_stock.create({
-        data: {
-          product_id: productId,
-          company_id: companyId,
-          quantity: quantity,
-          transactionDate: new Date(date),
-          list_price: null,
-        },
+      // Increase stock (one row per product/company; history is in product_purchase_history)
+      await adjustProductStock({
+        productId,
+        companyId,
+        quantityDelta: quantity,
+        transactionDate: date,
       });
 
       // Create purchase history entry
@@ -363,6 +364,7 @@ const getAllPurchaseInvoice = async (req, res) => {
     res.json(aggregations);
   } else {
     const { skip, limit } = getPagination(req.query);
+    const dateFilter = getDateRangeFilter(req.query);
     try {
       // get purchase invoice with pagination and info
       const [aggregations, purchaseInvoices] = await prisma.$transaction([
@@ -378,19 +380,15 @@ const getAllPurchaseInvoice = async (req, res) => {
             paid_amount: true,
           },
           where: {
-            date: {
-              gte: new Date(req.query.startdate),
-              lte: new Date(req.query.enddate),
-            },
+            date: dateFilter,
             company_id: companyId,
           },
         }),
         // get purchaseInvoice paginated and by start and end date
         prisma.purchaseInvoice.findMany({
           orderBy: [
-            {
-              id: "desc",
-            },
+            { date: "desc" },
+            { id: "desc" },
           ],
           skip: Number(skip),
           take: Number(limit),
@@ -402,10 +400,7 @@ const getAllPurchaseInvoice = async (req, res) => {
             },
           },
           where: {
-            date: {
-              gte: new Date(req.query.startdate),
-              lte: new Date(req.query.enddate),
-            },
+            date: dateFilter,
             company_id: companyId,
           },
         }),
@@ -681,6 +676,10 @@ const getSinglePurchaseInvoice = async (req, res) => {
 };
 
 const updateSinglePurchaseInvoice = async (req, res) => {
+  if (req.body?.action === "delete") {
+    return deleteSinglePurchaseInvoice(req, res);
+  }
+
   const companyId = await getCompanyId(req.auth.sub);
   if (!companyId) {
     return res.status(400).json({ error: "User company_id not found" });
@@ -782,9 +781,100 @@ const updateSinglePurchaseInvoice = async (req, res) => {
   }
 };
 
+const deleteSinglePurchaseInvoice = async (req, res) => {
+  try {
+    const companyId = await getCompanyId(req.auth.sub);
+    if (!companyId) {
+      return res.status(400).json({ error: "User company_id not found" });
+    }
+
+    const invoiceId = Number(req.params.id);
+    const invoice = await prisma.purchaseInvoice.findUnique({
+      where: { id: invoiceId },
+      include: {
+        purchaseInvoiceProduct: true,
+        returnPurchaseInvoice: true,
+      },
+    });
+
+    if (!invoice) {
+      return res.status(404).json({ error: "Purchase invoice not found" });
+    }
+    if (invoice.company_id !== companyId) {
+      return res.status(403).json({ error: "Purchase invoice does not belong to your company" });
+    }
+    if (invoice.returnPurchaseInvoice?.length > 0) {
+      return res.status(400).json({
+        error: "Cannot delete purchase invoice with return records. Delete returns first.",
+      });
+    }
+    if (Number(invoice.paid_amount) > 0) {
+      return res.status(400).json({
+        error: "Cannot delete purchase invoice with payments recorded",
+      });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      for (const item of invoice.purchaseInvoiceProduct) {
+        await adjustProductStock({
+          productId: item.product_id,
+          companyId,
+          quantityDelta: -Number(item.product_quantity),
+          transactionDate: invoice.date,
+          db: tx,
+        });
+      }
+
+      await tx.product_purchase_history.deleteMany({
+        where: { purchase_invoice_id: invoiceId },
+      });
+
+      await tx.transaction.deleteMany({
+        where: {
+          company_id: companyId,
+          related_id: invoiceId,
+          type: { in: ["purchase", "purchase_return"] },
+        },
+      });
+
+      if (invoice.purchase_order_id) {
+        for (const item of invoice.purchaseInvoiceProduct) {
+          const poItem = await tx.purchase_order_item.findFirst({
+            where: {
+              order_id: invoice.purchase_order_id,
+              product_id: item.product_id,
+            },
+          });
+          if (poItem) {
+            await tx.purchase_order_item.update({
+              where: { id: poItem.id },
+              data: {
+                received_quantity: Math.max(
+                  0,
+                  poItem.received_quantity - Number(item.product_quantity)
+                ),
+              },
+            });
+          }
+        }
+      }
+
+      await tx.purchaseInvoice.delete({
+        where: { id: invoiceId },
+      });
+    });
+
+    res.json({ success: true, message: "Purchase invoice deleted successfully" });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+    console.log(error.message);
+  }
+};
+
 module.exports = {
   createSinglePurchaseInvoice,
   getAllPurchaseInvoice,
   getSinglePurchaseInvoice,
   updateSinglePurchaseInvoice,
+  deleteSinglePurchaseInvoice,
 };
