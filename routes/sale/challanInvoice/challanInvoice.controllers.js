@@ -3,13 +3,6 @@ const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
 const { allocateDocumentNumber } = require("../../../utils/documentSeries");
 
-const productWithPublisherInclude = {
-  include: {
-    book_publisher: true,
-    product_currency: true,
-  },
-};
-
 const createSingleChallan = async (req, res) => {
   try {
     // Resolve company_id from logged-in user
@@ -283,7 +276,7 @@ const getAllChallan = async (req, res) => {
         user: true,
         challanInvoiceProduct: {
           include: {
-            product: productWithPublisherInclude,
+            product: true,
           },
         },
       },
@@ -319,7 +312,7 @@ const getSingleChallan = async (req, res) => {
         user: true,
         challanInvoiceProduct: {
           include: {
-            product: productWithPublisherInclude,
+            product: true,
           },
         },
       },
@@ -356,7 +349,7 @@ const convertChallanToSale = async (req, res) => {
         user: true,
         challanInvoiceProduct: {
           include: {
-            product: productWithPublisherInclude,
+            product: true,
           },
         },
       },
@@ -769,7 +762,7 @@ const updateSingleChallan = async (req, res) => {
         user: true,
         challanInvoiceProduct: {
           include: {
-            product: productWithPublisherInclude,
+            product: true,
           },
         },
       },

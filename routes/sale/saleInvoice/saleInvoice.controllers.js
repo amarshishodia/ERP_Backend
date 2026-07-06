@@ -3,7 +3,6 @@ const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
 const { createTransactionWithSubAccounts } = require("../../../utils/transactionHelper");
 const { allocateDocumentNumber } = require("../../../utils/documentSeries");
-const { adjustProductStock } = require("../../../utils/productStock");
 const {
   sumSaleCashReceiptAmounts,
   netBilledSaleAmount,
@@ -353,13 +352,15 @@ const createSingleSaleInvoice = async (req, res) => {
       const purchasePrice = product?.purchase_price || 0;
       const profit = (salePrice * conversion - purchasePrice) * quantity * (1 - discount / 100);
       
-      // Decrease stock (one row per product/company; history is in product_sale_history)
-      await adjustProductStock({
-        productId,
-        companyId,
-        quantityDelta: -quantity,
-        transactionDate: date,
-        listPrice: Number.isFinite(salePrice) ? salePrice : undefined,
+      // Record stock movement as a ledger row in product_stock (sale = negative quantity)
+      await prisma.product_stock.create({
+        data: {
+          product_id: productId,
+          company_id: companyId,
+          quantity: -quantity,
+          transactionDate: new Date(date),
+          list_price: Number.isFinite(salePrice) ? salePrice : null,
+        },
       });
       
       // Create sale history entry

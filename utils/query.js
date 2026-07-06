@@ -11,21 +11,4 @@ const getPagination = (query) => {
   };
 };
 
-const getDateRangeFilter = (query) => {
-  const now = new Date();
-  const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-
-  const parseDate = (value, fallback) => {
-    if (!value) return fallback;
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? fallback : parsed;
-  };
-
-  return {
-    gte: parseDate(query.startdate, defaultStart),
-    lte: parseDate(query.enddate, defaultEnd),
-  };
-};
-
-module.exports = { getPagination, getDateRangeFilter };
+module.exports = { getPagination };

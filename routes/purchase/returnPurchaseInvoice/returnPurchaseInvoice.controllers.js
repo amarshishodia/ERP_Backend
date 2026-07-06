@@ -1,7 +1,6 @@
 const { getPagination } = require("../../../utils/query");
 const { getCompanyId } = require("../../../utils/company");
 const prisma = require("../../../utils/prisma");
-const { adjustProductStock } = require("../../../utils/productStock");
 
 const createSingleReturnPurchaseInvoice = async (req, res) => {
   // Get company_id from logged-in user
@@ -229,11 +228,13 @@ const createSingleReturnPurchaseInvoice = async (req, res) => {
       const productId = Number(item.product_id);
       const quantity = Number(item.product_quantity);
       
-      await adjustProductStock({
-        productId,
-        companyId,
-        quantityDelta: -quantity,
-        transactionDate: date,
+      await prisma.product_stock.create({
+        data: {
+          product_id: productId,
+          company_id: companyId,
+          quantity: -quantity,
+          transactionDate: new Date(date),
+        },
       });
     }
       res.json({
@@ -524,11 +525,13 @@ const deleteSingleReturnPurchaseInvoice = async (req, res) => {
     }
     // Reverse the return by writing opposite ledger rows
     for (const item of returnPurchaseInvoice.returnPurchaseInvoiceProduct) {
-      await adjustProductStock({
-        productId: Number(item.product_id),
-        companyId,
-        quantityDelta: Number(item.product_quantity),
-        transactionDate: new Date(),
+      await prisma.product_stock.create({
+        data: {
+          product_id: Number(item.product_id),
+          company_id: companyId,
+          quantity: Number(item.product_quantity),
+          transactionDate: new Date(),
+        },
       });
     }
     // all operations in one transaction

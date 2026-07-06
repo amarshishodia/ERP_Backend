@@ -688,7 +688,6 @@ model product_stock {
   company          appSetting @relation(fields: [company_id], references: [id], onDelete: Cascade)
   location         location?  @relation(fields: [location_id], references: [id], onDelete: SetNull)
 
-  @@unique([product_id, company_id])
   @@index([product_id])
   @@index([company_id])
   @@index([location_id])
